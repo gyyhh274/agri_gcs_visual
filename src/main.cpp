@@ -19,6 +19,7 @@
 #include "NestPosition.h"
 #include "AircraftProfile.h"
 #include "GroundLink.h"
+#include "GimbalLink.h"
 
 namespace {
 void reportError(const QString &message)
@@ -85,6 +86,11 @@ int main(int argc, char *argv[])
     parser.addOption({QStringLiteral("section"), QStringLiteral("Initial sidebar: logs 0..5, settings 0..7."), QStringLiteral("index"), QStringLiteral("0")});
     parser.addOption({QStringLiteral("size"), QStringLiteral("Window size in logical pixels, e.g. 1536x1024."), QStringLiteral("widthxheight"), QStringLiteral("1536x1024")});
     parser.addOption({QStringLiteral("screenshot"), QStringLiteral("Save a screenshot and exit (PNG recommended)."), QStringLiteral("path")});
+    parser.addOption({QStringLiteral("screenshot-delay"), QStringLiteral("Delay before capturing the screenshot, in ms (default 1000)."), QStringLiteral("ms"), QStringLiteral("1000")});
+    parser.addOption({QStringLiteral("video-diag"), QStringLiteral("Log video pipeline diagnostics every second.")});
+    parser.addOption({QStringLiteral("gimbal-test"), QStringLiteral("Run a gimbal control self test and exit.")});
+    parser.addOption({QStringLiteral("gimbal-host"), QStringLiteral("Gimbal relay host used by --gimbal-test."), QStringLiteral("host"), QStringLiteral("192.168.2.113")});
+    parser.addOption({QStringLiteral("gimbal-port"), QStringLiteral("Gimbal relay port used by --gimbal-test."), QStringLiteral("port"), QStringLiteral("37260")});
     parser.addOption({QStringLiteral("fullscreen"), QStringLiteral("Open full screen.")});
     parser.addOption({QStringLiteral("software"), QStringLiteral("Use the Qt Quick software renderer.")});
     parser.addOption({QStringLiteral("overview"), QStringLiteral("Use the settings overview layout without sidebar.")});
@@ -109,13 +115,15 @@ int main(int argc, char *argv[])
     const int width = sizeMatch.captured(1).toInt();
     const int height = sizeMatch.captured(2).toInt();
     const QString screenshotPath = parser.value(QStringLiteral("screenshot"));
+    const int screenshotDelay = parser.value(QStringLiteral("screenshot-delay")).toInt();
     if (!pageValid || previewPage < 0 || previewPage > 2
             || !tabValid || previewTab < 0 || previewTab > 3
             || !sectionValid || previewSection < 0 || previewSection > (previewPage == 2 ? 7 : previewPage == 1 ? 5 : 0)
             || !sizeMatch.hasMatch() || width < 320 || height < 240
             || width > 8192 || height > 8192
+            || screenshotDelay < 0 || screenshotDelay > 60000
             || (parser.isSet(QStringLiteral("screenshot")) && screenshotPath.isEmpty())) {
-        reportError(QStringLiteral("Invalid options: --page=0..2, --tab=0..3, --section=logs 0..5/settings 0..7/task 0, --size=320x240..8192x8192; screenshot path cannot be empty."));
+        reportError(QStringLiteral("Invalid options: --page=0..2, --tab=0..3, --section=logs 0..5/settings 0..7/task 0, --size=320x240..8192x8192, --screenshot-delay=0..60000; screenshot path cannot be empty."));
         return 2;
     }
 
@@ -140,6 +148,7 @@ int main(int argc, char *argv[])
     NestPosition nestPosition(&mapSource);
     AircraftProfile aircraftProfile;
     GroundLink groundLink;
+    GimbalLink gimbalLink;
     QSettings settings;
     QString tileDirectory = parser.isSet(QStringLiteral("tiles")) ? parser.value(QStringLiteral("tiles"))
         : qEnvironmentVariable("AGRI_GCS_TILE_DIR", settings.value("OfflineMap/directory").toString());
@@ -165,6 +174,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("nestPosition", &nestPosition);
     engine.rootContext()->setContextProperty("aircraftProfile", &aircraftProfile);
     engine.rootContext()->setContextProperty("groundLink", &groundLink);
+    engine.rootContext()->setContextProperty("gimbalLink", &gimbalLink);
     engine.setInitialProperties({
         {QStringLiteral("pageIndex"), previewPage},
         {QStringLiteral("previewTab"), previewTab},
@@ -188,12 +198,44 @@ int main(int argc, char *argv[])
     if (parser.isSet(QStringLiteral("fullscreen")))
         window->showFullScreen();
     if (!screenshotPath.isEmpty()) {
-        QTimer::singleShot(1000, &app, [window, screenshotPath]() {
+        QTimer::singleShot(screenshotDelay, &app, [window, screenshotPath]() {
             saveScreenshot(window, screenshotPath);
-        });
-        QTimer::singleShot(12000, &app, []() {
+        });        QTimer::singleShot(screenshotDelay + 12000, &app, []() {
             reportError(QStringLiteral("Screenshot failed: rendering timed out."));
             QCoreApplication::exit(4);
+        });
+    }
+
+    // 云台自检：验证"下发指令 → 读回真实角度"的完整回路（现场排障用）
+    if (parser.isSet(QStringLiteral("gimbal-test"))) {
+        const QString host = parser.value(QStringLiteral("gimbal-host"));
+        const int port = parser.value(QStringLiteral("gimbal-port")).toInt();
+        auto report = [&gimbalLink](const QString &tag) {
+            std::fprintf(stdout,
+                         "[gimbal-test] %-20s connected=%d yaw=%.1f pitch=%.1f roll=%.1f "
+                         "zoom=%.1f mode=%s record=%s\n",
+                         qPrintable(tag), gimbalLink.connected() ? 1 : 0,
+                         gimbalLink.yaw(), gimbalLink.pitch(), gimbalLink.roll(),
+                         gimbalLink.zoom(), qPrintable(gimbalLink.modeName()),
+                         qPrintable(gimbalLink.recordStatusName()));
+            std::fflush(stdout);
+        };
+        QTimer::singleShot(300, &app, [&gimbalLink, host, port]() {
+            gimbalLink.connectToGimbal(host, port);
+        });
+        QTimer::singleShot(2600, &app, [report, &gimbalLink]() {
+            report(QStringLiteral("连接后"));
+            gimbalLink.setAttitude(gimbalLink.yaw(), gimbalLink.pitch() - 8.0);
+            report(QStringLiteral("已下发 pitch-8"));
+        });
+        QTimer::singleShot(5200, &app, [report, &gimbalLink]() {
+            report(QStringLiteral("pitch-8 回读"));
+            gimbalLink.setAttitude(gimbalLink.yaw(), gimbalLink.pitch() + 8.0);
+            report(QStringLiteral("已下发 pitch+8 复原"));
+        });
+        QTimer::singleShot(8000, &app, [report, &app]() {
+            report(QStringLiteral("复原回读"));
+            app.exit(0);
         });
     }
 

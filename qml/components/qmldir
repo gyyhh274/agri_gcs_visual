@@ -1,0 +1,16 @@
+singleton VideoConfig 1.0 VideoConfig.qml
+VideoStream 1.0 VideoStream.qml
+VideoPanel 1.0 VideoPanel.qml
+GCard 1.0 GCard.qml
+GButton 1.0 GButton.qml
+GField 1.0 GField.qml
+StatusDot 1.0 StatusDot.qml
+Toggle 1.0 Toggle.qml
+MapPanel 1.0 MapPanel.qml
+MediaThumb 1.0 MediaThumb.qml
+FormLabel 1.0 FormLabel.qml
+ValueField 1.0 ValueField.qml
+FieldRow 1.0 FieldRow.qml
+ChoiceField 1.0 ChoiceField.qml
+SwitchRow 1.0 SwitchRow.qml
+ConnectionMode 1.0 ConnectionMode.qml
