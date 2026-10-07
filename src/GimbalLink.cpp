@@ -394,13 +394,15 @@ void GimbalLink::flushRotate()
 
     // 0x07 用 int8 表示 -100~100 的转向速度；实时流式控制不等 ACK
     //
-    // ⚠️ 实机修正（2026-10-07 实测）：SDK 文档写「向右滑动 0~100」，
-    //    但本机固件实际是【正值 = 向左转】（yaw 角度减小）：
-    //        发 yaw +50 → 角度变化 -49.2°；发 yaw -50 → 角度变化 +49.7°
-    //    pitch 与文档一致（正值 = 向上）。
-    //    这里对 yaw 取反，使上层（QML 拨杆）保持「向右为正值」的直观约定。
+    // 方向约定（2026-10-07 两次实测后确认，勿再"修正"）：
+    //   线上正值 = 相机向右转（顺时针俯视），与 SDK 文档「向右滑动 0~100」一致。
+    //
+    //   注意相机【回报的角度】是另一套约定：正值 = 逆时针（向左）。
+    //   所以"发正值 → 回报 yaw 变小"是正常的，不代表方向反了。
+    //   曾经因为只看回报角度就误判文档有误、加了取反，导致拨杆左右颠倒。
+    //   判定方向要看的【唯一的真相是画面】：相机右转时画面内容向左移动。
     QByteArray payload;
-    payload.append(static_cast<char>(static_cast<qint8>(-m_lastYawRate)));
+    payload.append(static_cast<char>(static_cast<qint8>(m_lastYawRate)));
     payload.append(static_cast<char>(static_cast<qint8>(m_lastPitchRate)));
     sendCommand(kCmdRotate, payload, false);
     emit rotateChanged();
