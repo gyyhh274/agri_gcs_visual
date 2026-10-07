@@ -10,10 +10,10 @@ Item {
     property bool nestOpen: false
     property bool charging: true
     property bool thermal: false
-    property bool recording: false
-    property real pitch: 0
-    property real heading: 90
-    property real zoom: 1
+    // 云台指令目标值（滑条用；真实角度以 gimbalLink 回报为准）
+    property real pitchCmd: 0
+    property real headingCmd: 0
+    property real zoomCmd: 1
     property int selectedWaypoint: -1
     property int routeRevision: 0
     property int selectedVideo: 0
@@ -21,6 +21,25 @@ Item {
     property int inspectedPhoto: 0
     signal requestSettings()
     Settings { id: routeStore; category: "MissionDemo" }
+
+    // ── 云台链路 ──────────────────────────────────────────────
+    // 相机只对机载电脑可达，实际连的是机载电脑上的 UDP 中转；
+    // 中转与视频中转（MediaMTX）跑在同一台机器上，所以主机名从视频地址推导。
+    readonly property string gimbalHost: {
+        var match = /^rtsp:\/\/(?:[^@\/]*@)?([^:\/]+)/.exec(VideoConfig.url)
+        return match ? match[1] : "192.168.2.113"
+    }
+    readonly property int gimbalPort: 37260
+
+    function connectGimbal() {
+        gimbalLink.connectToGimbal(gimbalHost, gimbalPort)
+        actionMessage("云台链路：" + gimbalHost + ":" + gimbalPort)
+    }
+
+    Connections {
+        target: gimbalLink
+        function onNotified(text) { page.actionMessage(text) }
+    }
 
     function routeJson() {
         var rows = []
@@ -32,6 +51,8 @@ Item {
     Component.onCompleted: {
         var saved = savedRouteJson()
         if (saved.length) importRoute(saved)
+        // 面板就绪后自动连接云台中转（地址由视频流地址推导）
+        Qt.callLater(connectGimbal)
     }
     function validCoordinate(lat, lon) {
         return isFinite(lat) && isFinite(lon) && Math.abs(lat) <= 85.05112878 && Math.abs(lon) <= 180
@@ -260,18 +281,41 @@ Item {
             GCard {
                 id: gimbal
                 anchors.left: parent.left; anchors.right: parent.right; anchors.top: realtime.bottom; anchors.topMargin: 10
-                height: 228
+                height: 268
                 title: "云台控制"
+
+                // ── 状态与重连 ──
                 Row {
-                    x: 11; y: 12; spacing: 22
+                    anchors.right: parent.right; anchors.rightMargin: 10; y: -35; height: 30; spacing: 10
+                    StatusDot {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: gimbalLink.connected ? "云台在线" : "云台离线"
+                        dotColor: gimbalLink.connected ? "#00db80" : "#8394a3"
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: gimbalLink.recordStatus === 1 ? "#ff6b6b" : "#9fb4c6"; font.pixelSize: 12
+                        text: gimbalLink.recordStatusName + " · " + gimbalLink.modeName
+                    }
+                    GButton { width: 56; height: 28; text: "重连"; onClicked: page.connectGimbal() }
+                }
+
+                Row {
+                    x: 11; y: 8; spacing: 20
+                    // ── 方向盘：相对步进 ──
                     Rectangle {
                         width: 106; height: 106; radius: 53; color: "#04121d"; border.color: "#123650"; border.width: 2
-                        Text { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; text: "⌃"; color: "white"; font.pixelSize: 22; width:36; height:28; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: page.pitch = Math.min(30,page.pitch+5) } }
-                        Text { anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; text: "⌄"; color: "white"; font.pixelSize: 22; width:36; height:28; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: page.pitch = Math.max(-90,page.pitch-5) } }
-                        Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "‹"; color: "white"; font.pixelSize: 33; width:28; height:40; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: page.heading = Math.max(-180,page.heading-5) } }
-                        Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "›"; color: "white"; font.pixelSize: 33; width:28; height:40; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: page.heading = Math.min(180,page.heading+5) } }
-                        Rectangle { anchors.centerIn: parent; width: 10; height: 10; radius: 5; color: "#214660" }
+                        Text { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; text: "⌃"; color: "white"; font.pixelSize: 22; width:36; height:28; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: gimbalLink.jog(0, 5) } }
+                        Text { anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; text: "⌄"; color: "white"; font.pixelSize: 22; width:36; height:28; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: gimbalLink.jog(0, -5) } }
+                        Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "‹"; color: "white"; font.pixelSize: 33; width:28; height:40; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: gimbalLink.jog(-5, 0) } }
+                        Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "›"; color: "white"; font.pixelSize: 33; width:28; height:40; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: gimbalLink.jog(5, 0) } }
+                        Rectangle {
+                            anchors.centerIn: parent; width: 26; height: 26; radius: 13; color: "#0d2b3f"; border.color: "#1d4a68"
+                            Text { anchors.centerIn: parent; text: "回中"; color: "#cfe0ef"; font.pixelSize: 10 }
+                            MouseArea { anchors.fill: parent; onClicked: gimbalLink.centerGimbal() }
+                        }
                     }
+                    // ── 滑条：绝对角度 / 变倍 ──
                     Column {
                         width: 240; spacing: 13
                         Repeater {
@@ -279,30 +323,95 @@ Item {
                             delegate: Row {
                                 width: 252; height: 25; spacing: 5
                                 Text { width: 53; text: modelData; color: "#aebfd0"; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
-                                Text { width: 35; text: index===0 ? page.pitch.toFixed(0)+"°" : index===1 ? page.heading.toFixed(0)+"°" : page.zoom.toFixed(1)+"x"; color: "#dce9f7"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                                GButton { width:25; height:25; text:"−"; fill:"#091e2d"; onClicked: {adjuster.decrease(); adjuster.applyValue()} }
+                                Text {
+                                    width: 38; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter
+                                    text: index===0 ? gimbalLink.pitch.toFixed(0)+"°"
+                                        : index===1 ? gimbalLink.yaw.toFixed(0)+"°"
+                                        : gimbalLink.zoom.toFixed(1)+"x"
+                                    color: gimbalLink.attitudeFresh ? "#dce9f7" : "#6d8496"
+                                }
+                                GButton {
+                                    width:25; height:25; text:"−"; fill:"#091e2d"
+                                    onClicked: {
+                                        if (index===0) gimbalLink.jog(0, -1)
+                                        else if (index===1) gimbalLink.jog(-1, 0)
+                                        else gimbalLink.zoomStep(-1)
+                                    }
+                                }
                                 Slider {
                                     id: adjuster
-                                    width: 90; height:25
-                                    from: index===0 ? -90 : index===1 ? -180 : 1
-                                    to: index===0 ? 30 : index===1 ? 180 : 10
-                                    stepSize: index===2 ? .1 : 1
-                                    value: index===0 ? page.pitch : index===1 ? page.heading : page.zoom
-                                    function applyValue() { if(index===0)page.pitch=value; else if(index===1)page.heading=value; else page.zoom=value }
-                                    onMoved: applyValue()
+                                    width: 88; height:25
+                                    from: index===0 ? gimbalLink.pitchMin : index===1 ? -gimbalLink.yawLimit : 1
+                                    to:   index===0 ? gimbalLink.pitchMax : index===1 ?  gimbalLink.yawLimit : gimbalLink.zoomMax
+                                    stepSize: index===2 ? 0.1 : 1
+                                    value: index===0 ? page.pitchCmd : index===1 ? page.headingCmd : page.zoomCmd
+                                    onMoved: {
+                                        if (index===0) { page.pitchCmd = value; gimbalLink.setAttitude(page.headingCmd, value) }
+                                        else if (index===1) { page.headingCmd = value; gimbalLink.setAttitude(value, page.pitchCmd) }
+                                        else { page.zoomCmd = value; gimbalLink.setZoomAbsolute(value) }
+                                    }
                                     background: Rectangle { x:adjuster.leftPadding; y:(adjuster.height-height)/2; width:adjuster.availableWidth; height:3; color:"#132f44"; Rectangle {width:adjuster.visualPosition*parent.width; height:3; color:"#0788ff"} }
                                     handle: Rectangle { x:adjuster.leftPadding+adjuster.visualPosition*(adjuster.availableWidth-width); y:(adjuster.height-height)/2; width:13; height:13; radius:7; color:"#087dff" }
                                 }
-                                GButton { width:25; height:25; text:"+"; fill:"#091e2d"; onClicked: {adjuster.increase(); adjuster.applyValue()} }
+                                GButton {
+                                    width:25; height:25; text:"+"; fill:"#091e2d"
+                                    onClicked: {
+                                        if (index===0) gimbalLink.jog(0, 1)
+                                        else if (index===1) gimbalLink.jog(1, 0)
+                                        else gimbalLink.zoomStep(1)
+                                    }
+                                }
+                                // 相机回报真实角度时同步滑条（用户正在拖动时不打扰）
+                                Connections {
+                                    target: gimbalLink
+                                    function onAttitudeChanged() {
+                                        if (!gimbalLink.attitudeFresh || adjuster.pressed) return
+                                        if (index === 0) { adjuster.value = gimbalLink.pitch; page.pitchCmd = gimbalLink.pitch }
+                                        else if (index === 1) { adjuster.value = gimbalLink.yaw; page.headingCmd = gimbalLink.yaw }
+                                    }
+                                    function onChanged() {
+                                        if (index !== 2 || adjuster.pressed) return
+                                        adjuster.value = gimbalLink.zoom
+                                        page.zoomCmd = gimbalLink.zoom
+                                    }
+                                }
                             }
                         }
                     }
                 }
+
+                // ── 云台模式与快捷动作 ──
+                Row {
+                    x: 12; y: 122; spacing: 6
+                    Repeater {
+                        model: [["锁定", 0], ["跟随", 1], ["FPV", 2]]
+                        delegate: GButton {
+                            width: 58; height: 30; text: modelData[0]
+                            fill: gimbalLink.mode === modelData[1] ? "#087dff" : "transparent"
+                            onClicked: gimbalLink.setMode(modelData[1])
+                        }
+                    }
+                    Item { width: 8; height: 1 }
+                    GButton { width: 58; height: 30; text: "朝下"; onClicked: gimbalLink.lookDown() }
+                    GButton { width: 68; height: 30; text: "软重启"; onClicked: gimbalLink.softReboot() }
+                }
+
+                // ── 相机功能 ──
                 Row {
                     anchors.left: parent.left; anchors.leftMargin: 11; anchors.bottom: parent.bottom; anchors.bottomMargin: 11; spacing: 7
                     Repeater {
                         model: [["拍照", "◉"], ["录像", "■"], ["变焦+", "⌕"], ["变焦−", "⌕"]]
-                        delegate: GButton { width: 91; height: 38; text: index===1 && page.recording ? "停止" : modelData[0]; icon: modelData[1]; onClicked: {if(index===2)page.zoom=Math.min(10,page.zoom+.5); else if(index===3)page.zoom=Math.max(1,page.zoom-.5); else {if(index===1)page.recording=!page.recording; page.actionMessage("演示："+modelData[0]+"，未连接相机")} } }
+                        delegate: GButton {
+                            width: 91; height: 38
+                            text: index===1 && gimbalLink.recordStatus === 1 ? "停止" : modelData[0]
+                            icon: modelData[1]
+                            onClicked: {
+                                if (index === 0) gimbalLink.takePhoto()
+                                else if (index === 1) gimbalLink.toggleRecording()
+                                else if (index === 2) gimbalLink.zoomStep(1)
+                                else gimbalLink.zoomStep(-1)
+                            }
+                        }
                     }
                 }
             }
