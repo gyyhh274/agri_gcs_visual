@@ -221,6 +221,7 @@ void GimbalLink::sendCommand(quint8 command, const QByteArray &payload, bool exp
     }
     if (expectAck) {
         Pending pending;
+        pending.payload = payload;   // 保存原载荷，重试时原样重发
         pending.sentAtMs = nowMs();
         pending.attempts = 1;
         m_pending.insert(command, pending);
@@ -252,22 +253,24 @@ void GimbalLink::decodePayload(quint8 command, const QByteArray &payload)
     switch (command) {
     case kCmdGetAttitude:
         // int16 yaw, pitch, roll, yawV, pitchV, rollV（0.1° 精度）
+        // 注意 yaw 取反：相机回报的 yaw 正值是逆时针（向左），
+        // 本类对外统一成「正值 = 向右」，与拨杆方向一致。
         if (payload.size() >= 6) {
             const auto raw = [&payload](int index) {
                 return static_cast<qint16>(static_cast<quint8>(payload.at(index)) |
                                            (static_cast<quint8>(payload.at(index + 1)) << 8));
             };
-            noteAttitude(raw(0) / 10.0, raw(2) / 10.0, raw(4) / 10.0);
+            noteAttitude(-raw(0) / 10.0, raw(2) / 10.0, raw(4) / 10.0);
         }
         break;
     case kCmdSetAttitude:
-        // 应答返回当前实际 yaw / pitch（0.1°）
+        // 应答返回当前实际 yaw / pitch（0.1°），yaw 同样取反
         if (payload.size() >= 4) {
             const auto raw = [&payload](int index) {
                 return static_cast<qint16>(static_cast<quint8>(payload.at(index)) |
                                            (static_cast<quint8>(payload.at(index + 1)) << 8));
             };
-            noteAttitude(raw(0) / 10.0, raw(2) / 10.0, m_roll);
+            noteAttitude(-raw(0) / 10.0, raw(2) / 10.0, m_roll);
         }
         break;
     case kCmdSystemInfo:
@@ -353,7 +356,10 @@ void GimbalLink::retryPending()
         }
         pending.attempts += 1;
         pending.sentAtMs = current;
-        sendCommand(static_cast<quint8>(it.key()), QByteArray(), false);
+        // 原样重发原载荷。曾经这里发的是空载荷，导致：
+        //   0x0E 重试 → 变成"回中"（yaw/pitch 都归 0），云台乱跑；
+        //   0x0F 重试 → 变成"变倍 1.0x"。
+        sendCommand(static_cast<quint8>(it.key()), pending.payload, false);
         ++it;
     }
 }
@@ -429,7 +435,8 @@ void GimbalLink::flushAttitudeTarget()
         return;
     m_targetDirty = false;
     QByteArray payload;
-    const qint16 yaw = static_cast<qint16>(std::lround(m_targetYaw * 10.0));
+    // yaw 取反：对外「正值 = 向右」，而 0x0E 线上正值是逆时针（向左）
+    const qint16 yaw = static_cast<qint16>(std::lround(-m_targetYaw * 10.0));
     const qint16 pitch = static_cast<qint16>(std::lround(m_targetPitch * 10.0));
     payload.append(static_cast<char>(yaw & 0xFF));
     payload.append(static_cast<char>((yaw >> 8) & 0xFF));

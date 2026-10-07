@@ -235,11 +235,16 @@ int main(int argc, char *argv[])
         });
         QTimer::singleShot(8000, &app, [report, &gimbalLink]() {
             report(QStringLiteral("pitch 复原回读"));
-            // 拨杆通道自检：向右推杆 1.2 秒后停止，yaw 应【增大】
+            // 航向角：对外约定「正值 = 向右」，下发 +30
+            gimbalLink.setAttitude(30.0, 0.0);
+        });
+        QTimer::singleShot(10200, &app, [report, &gimbalLink]() {
+            report(QStringLiteral("右转30°回读"));
+            // 拨杆通道自检：向右推杆 1.2 秒后停止
             gimbalLink.setRotateRate(60, 0);
         });
-        QTimer::singleShot(9200, &app, [&gimbalLink]() { gimbalLink.stopRotate(); });
-        QTimer::singleShot(10400, &app, [report, &app]() {
+        QTimer::singleShot(11400, &app, [&gimbalLink]() { gimbalLink.stopRotate(); });
+        QTimer::singleShot(12800, &app, [report, &app]() {
             report(QStringLiteral("拨杆右推后"));
             app.exit(0);
         });

@@ -12,6 +12,15 @@
  * 相机地址是 192.168.144.25:37260，只有机载电脑可达；地面站实际连接的是
  * 机载电脑上的 UDP 中转（systemd: siyi-gimbal-relay），默认 192.168.2.113:37260。
  *
+ * ── 方向约定（重要）──────────────────────────────────────────
+ * 相机自身有【两套相反】的符号约定：
+ *     指令 0x07 turn_yaw ： 正值 = 向右转
+ *     角度 0x0D / 0x0E   ： 正值 = 逆时针（向左）
+ * 本类对这些差异做了封装，**对外统一为「yaw 正值 = 向右」**
+ * （与拨杆、滑条一致），内部按需取反。所以：
+ *     yaw 变大 = 向右转，yaw 变小 = 向左转
+ * 判定物理方向时请以【画面】为准（相机右转时画面内容向左移动）。
+ *
  * 协议（SDK V0.1.1）：
  *   帧 = 55 66 | control | payload_len(2,LE) | seq(2,LE) | cmd(1) | payload | crc16(2,LE)
  *   CRC16 = CCITT poly 0x1021，初值 0（等价 Python binascii.crc_hqx(data, 0)）
@@ -21,6 +30,7 @@
  *     因此本类【不实现】心跳，永远不发 0x00。
  *   * A8 mini 的 UDP SDK 是单客户端模型，源端口必须保持稳定 ——
  *     QUdpSocket 在对象生命周期内只 bind 一次且不重连。
+ *   * 转向（0x07）是流式指令，不发 0 相机会一直转，见 setRotateRate()。
  */
 class GimbalLink final : public QObject {
     Q_OBJECT
@@ -112,6 +122,7 @@ private slots:
 
 private:
     struct Pending {
+        QByteArray payload;      // 重试必须重发【原始载荷】，否则会变成"空命令"
         qint64 sentAtMs{0};
         int attempts{0};
     };
