@@ -142,7 +142,7 @@ Item {
                         model: [
                             ["✣", "无人机连接", page.droneConnected ? "已连接" : "未连接", page.values.droneIp],
                             ["▣", "机巢连接", page.nestConnected ? "已连接" : "未连接", page.values.nestIp],
-                            ["▧", "图传状态", "未接入", ""], ["●", "定位状态", groundLink.odomFresh ? "world 有效" : "未获得", "局部坐标"],
+                            ["▧", "图传状态", VideoConfig.runtimeLive ? "实时" : (VideoConfig.runtimePhase === "connecting" ? "连接中" : VideoConfig.runtimePhase === "retry" ? "重连中" : "未接入"), VideoConfig.runtimeUsingPipeline ? "GStreamer" : "Qt"], ["●", "定位状态", groundLink.odomFresh ? "world 有效" : "未获得", "局部坐标"],
                             ["⌖", "RTK状态", "未接入", ""], ["▰", "网络状态", groundLink.connected ? "网关已连" : "未连接", groundLink.endpoint]
                         ]
                         delegate: Item {
@@ -227,10 +227,93 @@ Item {
                     id: networkCard
                     width: Math.round((parent.width - parent.spacing) * 0.535); height: parent.height; title: "网络与通信"
                     Column {
-                        x: 14; y: 8; width: parent.width - 28; spacing: 5
-                        Row { width: parent.width; height: 31; FormLabel { width: 114; text: "图传协议" } ChoiceField { width: 188; model: ["RTSP", "UDP", "本地视频"] } }
-                        FieldRow { configuration: page.values; onEdited: page.setValue(key, value); label: "图传地址"; labelWidth: 114; configKey: "videoUrl" }
-                        Row { width: parent.width; height: 31; FormLabel { width: 114; text: "图传端口" } ValueField { width: 170; text: page.values.videoPort; onTextEdited: page.setValue("videoPort", text) } }
+                        x: 14; y: 6; width: parent.width - 28; spacing: 2
+                        // ── 视频流（真实 RTSP 拉流，绑定 VideoConfig 单例）──
+                        Row {
+                            width: parent.width; height: 31
+                            FormLabel { width: 114; text: "视频流地址" }
+                            ChoiceField {
+                                width: 236
+                                model: VideoConfig.presetNames
+                                currentIndex: VideoConfig.presetIndex
+                                onActivated: VideoConfig.presetIndex = index
+                            }
+                            Item { width: 8; height: 1 }
+                            GButton {
+                                width: 64; height: 31
+                                text: VideoConfig.enabled ? "停止" : "拉流"
+                                fill: VideoConfig.enabled ? "#2a5d80" : "#087dff"
+                                onClicked: VideoConfig.enabled = !VideoConfig.enabled
+                            }
+                        }
+                        Row {
+                            width: parent.width; height: 31
+                            FormLabel { width: 114; text: "自定义地址" }
+                            ValueField {
+                                width: parent.width - 114
+                                text: VideoConfig.customUrl
+                                onTextEdited: { VideoConfig.customUrl = text; VideoConfig.presetIndex = 3 }
+                            }
+                        }
+                        Row {
+                            width: parent.width; height: 31
+                            FormLabel { width: 114; text: "传输 / 编码" }
+                            ChoiceField {
+                                width: 118
+                                model: VideoConfig.transportNames
+                                currentIndex: VideoConfig.transportIndex
+                                onActivated: VideoConfig.transportIndex = index
+                            }
+                            Item { width: 8; height: 1 }
+                            ChoiceField {
+                                width: 130
+                                model: VideoConfig.codecNames
+                                currentIndex: VideoConfig.codecIndex
+                                onActivated: VideoConfig.codecIndex = index
+                            }
+                        }
+                        Row {
+                            width: parent.width; height: 31
+                            FormLabel { width: 114; text: "认证账号" }
+                            ValueField {
+                                width: 96; height: 31
+                                text: VideoConfig.userId
+                                onTextEdited: VideoConfig.userId = text
+                            }
+                            Item { width: 6; height: 1 }
+                            ValueField {
+                                width: parent.width - 114 - 96 - 6; height: 31
+                                text: VideoConfig.userPw
+                                echoMode: TextInput.Password
+                                onTextEdited: VideoConfig.userPw = text
+                            }
+                        }
+                        Row {
+                            width: parent.width; height: 31
+                            FormLabel { width: 114; text: "图传状态" }
+                            Rectangle {
+                                width: 9; height: 9; radius: 5; anchors.verticalCenter: parent.verticalCenter
+                                color: VideoConfig.runtimeLive ? "#00db80"
+                                     : (VideoConfig.runtimePhase === "connecting" || VideoConfig.runtimePhase === "retry") ? "#f0a51e" : "#8394a3"
+                            }
+                            Text {
+                                width: parent.width - 114 - 9 - 6 - 100
+                                anchors.verticalCenter: parent.verticalCenter
+                                leftPadding: 6
+                                text: VideoConfig.runtimeDetail
+                                color: VideoConfig.runtimeLive ? "#00e787" : "#9fb4c6"
+                                font.pixelSize: 11; elide: Text.ElideRight
+                            }
+                            ValueField {
+                                width: 52; height: 31
+                                text: String(VideoConfig.latency)
+                                onTextEdited: { var v = parseInt(text); if (!isNaN(v) && v >= 0) VideoConfig.latency = v }
+                            }
+                            GButton {
+                                width: 40; height: 31; text: "重连"
+                                onClicked: VideoConfig.reconnectRequest += 1
+                            }
+                        }
                         Row { width: parent.width; height: 31; FormLabel { width: 114; text: "机载协议" } FormLabel { width: 260; text: "ROS/TCP 遥测（只读）" } }
                         Row {
                             width: parent.width; height: 33
