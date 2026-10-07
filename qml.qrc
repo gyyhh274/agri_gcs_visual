@@ -1,0 +1,27 @@
+<RCC>
+  <qresource prefix="/">
+    <file>qml/Main.qml</file>
+    <file>qml/components/GCard.qml</file>
+    <file>qml/components/GButton.qml</file>
+    <file>qml/components/GField.qml</file>
+    <file>qml/components/StatusDot.qml</file>
+    <file>qml/components/Toggle.qml</file>
+    <file>qml/components/MapPanel.qml</file>
+    <file>qml/components/VideoPanel.qml</file>
+    <file>qml/pages/TaskPage.qml</file>
+    <file>qml/pages/LogPage.qml</file>
+    <file>qml/pages/SettingsPage.qml</file>
+    <file>assets/map.png</file>
+    <file>assets/video.png</file>
+    <file>assets/drone.png</file>
+    <file>assets/nest.png</file>
+    <file>assets/gallery-reference.png</file>
+    <file>qml/components/MediaThumb.qml</file>
+    <file>qml/components/FormLabel.qml</file>
+    <file>qml/components/ValueField.qml</file>
+    <file>qml/components/FieldRow.qml</file>
+    <file>qml/components/ChoiceField.qml</file>
+    <file>qml/components/SwitchRow.qml</file>
+    <file>qml/components/ConnectionMode.qml</file>
+  </qresource>
+</RCC>

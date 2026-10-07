@@ -1,0 +1,28 @@
+{
+  "name": "浙江师范大学金华校区及周边",
+  "type": "locally rendered street/building map, NOT satellite imagery",
+  "scheme": "xyz",
+  "projection": "EPSG:3857",
+  "coordinate_system": "WGS84",
+  "bounds": [
+    119.62,
+    29.124,
+    119.654,
+    29.151
+  ],
+  "center": [
+    119.63764,
+    29.13678
+  ],
+  "minzoom": 14,
+  "maxzoom": 19,
+  "tile_count": 3138,
+  "source": "https://overpass.private.coffee/api/interpreter",
+  "source_timestamp": "2026-06-01T08:52:28Z",
+  "source_sha256": "1ae81309776cc0491ad2dcddb64105c7058cbeca503442843fe4d5069064a9be",
+  "feature_count": 1413,
+  "attribution": "© OpenStreetMap contributors · ODbL",
+  "license": "https://opendatacommons.org/licenses/odbl/1-0/",
+  "copyright": "https://www.openstreetmap.org/copyright",
+  "warning": "Open map data may be incomplete/outdated. Not a surveyed navigation or flight safety map."
+}

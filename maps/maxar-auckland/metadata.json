@@ -1,0 +1,42 @@
+{
+  "name": "奥克兰周边离线卫星影像（新西兰）",
+  "type": "real satellite RGB imagery; NOT AI-generated",
+  "scheme": "xyz",
+  "projection": "EPSG:3857",
+  "coordinate_system": "WGS84",
+  "bounds": [
+    174.64581454328567,
+    -36.75505921832383,
+    174.70670600489723,
+    -36.706046089594494
+  ],
+  "center": [
+    174.67626027409145,
+    -36.730552653959165
+  ],
+  "minzoom": 13,
+  "maxzoom": 18,
+  "tile_size": 256,
+  "tile_format": "JPEG quality 90 (full coverage); RGBA PNG (transparent edges)",
+  "tile_count": 2689,
+  "tiles_per_zoom": {
+    "13": 4,
+    "14": 12,
+    "15": 42,
+    "16": 144,
+    "17": 517,
+    "18": 1970
+  },
+  "source": "https://maxar-opendata.s3.us-west-2.amazonaws.com/events/New-Zealand-Flooding23/ard/60/213311212312/2022-12-11/10300100DE4D9300-visual.tif",
+  "source_metadata": "https://maxar-opendata.s3.us-west-2.amazonaws.com/events/New-Zealand-Flooding23/ard/60/213311212312/2022-12-11/10300100DE4D9300.json",
+  "source_sha256": "1094eef0572e6324cdd3653d888c76c5d1e12ae8fc0577a612fd80588f14b248",
+  "source_bytes": 61216613,
+  "acquired": "2022-12-11T22:13:03Z",
+  "platform": "WorldView-2",
+  "source_gsd_m": 0.56,
+  "visual_pixel_spacing_m": 0.30517578125,
+  "processing": "Reprojected UTM EPSG:32760 to Web Mercator EPSG:3857; bilinear resampling; JPEG quality 90 and transparent-edge PNG XYZ tiles.",
+  "attribution": "© Maxar · CC BY-NC 4.0 · 非商业 · 2022-12-11",
+  "license": "https://creativecommons.org/licenses/by-nc/4.0/",
+  "warning": "Historical imagery for non-commercial demonstrations only. Not the actual flight site; not a flight-safety or obstacle survey."
+}
