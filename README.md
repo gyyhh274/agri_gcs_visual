@@ -75,6 +75,25 @@ A8 mini 192.168.144.25:8554/main.264 (H.265)
 单客户端模型）与恢复流程见 [云台实时操控说明](GIMBAL_CONTROL.md)；
 开发过程、踩坑记录与可复用经验见 [云台操控开发过程记录](GIMBAL_DEV_PROCESS.md)。
 
+## 机载电脑部署
+
+相机（`192.168.144.25`）只在机载电脑所在网段可达，视频与云台控制都需要机载侧中转：
+
+| 中转 | 端口 | 说明 |
+| --- | --- | --- |
+| MediaMTX | 8554 | 相机 RTSP → 只读转发（`sourceOnDemand`，无人观看不拉流） |
+| siyi-gimbal-relay | 37260/UDP | 地面站 → 相机 SDK 指令，单一持久上游 socket |
+
+中转服务的源码、systemd 单元与一键安装脚本在本仓库
+[`deploy/`](deploy/README.md)：
+
+```bash
+sudo bash deploy/install_relay.sh     # 安装并自检（会校验跑的是不是新版本）
+```
+
+中转内置两条安全策略：**丢弃 CMD 0x00 心跳**（UDP 发送会让相机挂死）
+与 **CMD 0x07 转向死手保护**（地面站崩溃/断网时自动停转）。
+
 ## 电脑与机载电脑 Wi-Fi 接入（首阶段，只读）
 
 机载 Diff-Planner 工程新增 `src/user_command/multipoint/scripts/ground_station_gateway.py`。它订阅机载 ROS1 的 `/mavros/state`、`/mavros/battery`、`/ekf/ekf_odom`、`/px4ctrl/mission_ready`，每 0.5 秒通过 TCP 输出一行 JSON 遥测。**它不接收任何飞行或任务指令，也不依赖旧 Orange Pi 触屏软件。** 实体遥控器仍保留安全接管。
