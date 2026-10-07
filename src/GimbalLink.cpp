@@ -12,6 +12,7 @@ constexpr quint8 kHeader1 = 0x66;
 
 // SDK 命令号（SIYI Gimbal Camera External SDK V0.1.1）
 constexpr quint8 kCmdZoomStep = 0x05;
+constexpr quint8 kCmdRotate = 0x07;
 constexpr quint8 kCmdCenter = 0x08;
 constexpr quint8 kCmdSystemInfo = 0x0A;
 constexpr quint8 kCmdCameraFunction = 0x0C;
@@ -57,6 +58,11 @@ GimbalLink::GimbalLink(QObject *parent) : QObject(parent)
     m_attitudeFlushTimer.setInterval(80);
     m_attitudeFlushTimer.setSingleShot(true);
     connect(&m_attitudeFlushTimer, &QTimer::timeout, this, &GimbalLink::flushAttitudeTarget);
+
+    // 拨杆是流式速度指令，合并到约 22 Hz
+    m_rotateTimer.setInterval(kRotateFlushMs);
+    m_rotateTimer.setSingleShot(true);
+    connect(&m_rotateTimer, &QTimer::timeout, this, &GimbalLink::flushRotate);
 }
 
 QString GimbalLink::modeName() const
@@ -181,6 +187,11 @@ void GimbalLink::disconnectFromGimbal()
     m_pending.clear();
     m_attitudeFlushTimer.stop();
     m_targetDirty = false;
+    // 断连前先把拨杆速度归零，避免云台继续转动
+    m_pendingYawRate = 0;
+    m_pendingPitchRate = 0;
+    m_rotateDirty = false;
+    m_rotateTimer.stop();
     resetState();
     m_status = QStringLiteral("已断开云台链路");
     emit changed();
@@ -347,9 +358,63 @@ void GimbalLink::retryPending()
     }
 }
 
+void GimbalLink::setRotateRate(int yawRate, int pitchRate)
+{
+    const int yaw = std::max(-100, std::min(100, yawRate));
+    const int pitch = std::max(-100, std::min(100, pitchRate));
+    m_lastRotateInputMs = nowMs();
+    m_rotateIdle = false;
+    if (yaw == m_pendingYawRate && pitch == m_pendingPitchRate && m_rotateDirty)
+        return;                       // 已经有同样的值在等待下发
+    m_pendingYawRate = yaw;
+    m_pendingPitchRate = pitch;
+    m_rotateDirty = true;
+    if (!m_rotateTimer.isActive())
+        m_rotateTimer.start();
+}
+
+void GimbalLink::stopRotate()
+{
+    m_pendingYawRate = 0;
+    m_pendingPitchRate = 0;
+    m_rotateDirty = true;
+    m_rotateIdle = true;
+    m_lastRotateInputMs = nowMs();
+    if (!m_rotateTimer.isActive())
+        m_rotateTimer.start();
+}
+
+void GimbalLink::flushRotate()
+{
+    if (!m_rotateDirty)
+        return;
+    m_rotateDirty = false;
+    m_lastYawRate = m_pendingYawRate;
+    m_lastPitchRate = m_pendingPitchRate;
+
+    // 0x07 用 int8 表示 -100~100 的转向速度；实时流式控制不等 ACK
+    //
+    // ⚠️ 实机修正（2026-10-07 实测）：SDK 文档写「向右滑动 0~100」，
+    //    但本机固件实际是【正值 = 向左转】（yaw 角度减小）：
+    //        发 yaw +50 → 角度变化 -49.2°；发 yaw -50 → 角度变化 +49.7°
+    //    pitch 与文档一致（正值 = 向上）。
+    //    这里对 yaw 取反，使上层（QML 拨杆）保持「向右为正值」的直观约定。
+    QByteArray payload;
+    payload.append(static_cast<char>(static_cast<qint8>(-m_lastYawRate)));
+    payload.append(static_cast<char>(static_cast<qint8>(m_lastPitchRate)));
+    sendCommand(kCmdRotate, payload, false);
+    emit rotateChanged();
+}
+
 void GimbalLink::onMaintenance()
 {
     retryPending();
+
+    // 死手保护：拨杆停止上报杆量后自动归零，避免界面卡死/断连时云台持续转动
+    if (!m_rotateIdle && nowMs() - m_lastRotateInputMs > kRotateDeadmanMs) {
+        stopRotate();
+    }
+
     if (m_attitudeFresh && nowMs() - m_attitudeAtMs > kAttitudeStaleMs) {
         m_attitudeFresh = false;
         emit attitudeChanged();

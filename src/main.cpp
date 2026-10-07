@@ -233,8 +233,14 @@ int main(int argc, char *argv[])
             gimbalLink.setAttitude(gimbalLink.yaw(), gimbalLink.pitch() + 8.0);
             report(QStringLiteral("已下发 pitch+8 复原"));
         });
-        QTimer::singleShot(8000, &app, [report, &app]() {
-            report(QStringLiteral("复原回读"));
+        QTimer::singleShot(8000, &app, [report, &gimbalLink]() {
+            report(QStringLiteral("pitch 复原回读"));
+            // 拨杆通道自检：向右推杆 1.2 秒后停止，yaw 应【增大】
+            gimbalLink.setRotateRate(60, 0);
+        });
+        QTimer::singleShot(9200, &app, [&gimbalLink]() { gimbalLink.stopRotate(); });
+        QTimer::singleShot(10400, &app, [report, &app]() {
+            report(QStringLiteral("拨杆右推后"));
             app.exit(0);
         });
     }

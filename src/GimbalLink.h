@@ -38,6 +38,9 @@ class GimbalLink final : public QObject {
     Q_PROPERTY(double zoom READ zoom NOTIFY changed)
     Q_PROPERTY(double zoomMax READ zoomMax NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
+    Q_PROPERTY(int yawRate READ yawRate NOTIFY rotateChanged)
+    Q_PROPERTY(int pitchRate READ pitchRate NOTIFY rotateChanged)
+    Q_PROPERTY(bool rotating READ rotating NOTIFY rotateChanged)
     Q_PROPERTY(double yawLimit READ yawLimit CONSTANT)
     Q_PROPERTY(double pitchMin READ pitchMin CONSTANT)
     Q_PROPERTY(double pitchMax READ pitchMax CONSTANT)
@@ -59,6 +62,9 @@ public:
     double zoom() const { return m_zoom; }
     double zoomMax() const { return m_zoomMax; }
     bool busy() const { return !m_pending.isEmpty(); }
+    int yawRate() const { return m_lastYawRate; }
+    int pitchRate() const { return m_lastPitchRate; }
+    bool rotating() const { return m_lastYawRate != 0 || m_lastPitchRate != 0; }
 
     // A8 mini 的角度与变倍限位（来自 SDK 文档）
     double yawLimit() const { return kYawLimit; }
@@ -75,6 +81,12 @@ public:
     Q_INVOKABLE void centerGimbal();                          // 一键回中 0x08
     Q_INVOKABLE void lookDown();                              // 一键朝下 0x0C/09
 
+    /* 拨杆速度控制（SDK 0x07 云台转向）。
+     * 杆量 -100~100 直接对应转向速度：向右为正 yaw、向上为正 pitch。
+     * 松手必须发 (0,0) 停止；若不发，相机会保持上一次速度。 */
+    Q_INVOKABLE void setRotateRate(int yawRate, int pitchRate);
+    Q_INVOKABLE void stopRotate();
+
     // 相机功能
     Q_INVOKABLE void setMode(int mode);       // 0 锁定 / 1 跟随 / 2 FPV
     Q_INVOKABLE void takePhoto();             // 0x0C/00
@@ -90,6 +102,7 @@ public:
 signals:
     void changed();
     void attitudeChanged();
+    void rotateChanged();
     void notified(const QString &text);
 
 private slots:
@@ -109,6 +122,8 @@ private:
     static constexpr int kAckTimeoutMs = 900;
     static constexpr int kMaxAttempts = 3;
     static constexpr qint64 kAttitudeStaleMs = 3000;
+    static constexpr int kRotateFlushMs = 45;    // 拨杆指令合并到约 22 Hz
+    static constexpr qint64 kRotateDeadmanMs = 500; // 超过这个时间没有新杆量就自动停止
 
     static quint16 crc16Ccitt(const QByteArray &data);
     static QByteArray buildFrame(quint8 command, const QByteArray &payload, quint16 sequence);
@@ -117,6 +132,7 @@ private:
     void sendCommand(quint8 command, const QByteArray &payload, bool expectAck = true);
     void retryPending();
     void flushAttitudeTarget();
+    void flushRotate();
     void setStatus(const QString &text);
     void noteAttitude(double yaw, double pitch, double roll);
     void decodePayload(quint8 command, const QByteArray &payload);
@@ -126,6 +142,16 @@ private:
     QTimer m_pollTimer;
     QTimer m_maintenanceTimer;
     QTimer m_attitudeFlushTimer;
+    QTimer m_rotateTimer;
+
+    // 拨杆状态
+    int m_lastYawRate{0};
+    int m_lastPitchRate{0};
+    int m_pendingYawRate{0};
+    int m_pendingPitchRate{0};
+    bool m_rotateDirty{false};
+    bool m_rotateIdle{true};
+    qint64 m_lastRotateInputMs{0};
 
     QHash<int, Pending> m_pending;
     quint16 m_sequence{0};

@@ -302,17 +302,111 @@ Item {
 
                 Row {
                     x: 11; y: 8; spacing: 20
-                    // ── 方向盘：相对步进 ──
-                    Rectangle {
-                        width: 106; height: 106; radius: 53; color: "#04121d"; border.color: "#123650"; border.width: 2
-                        Text { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; text: "⌃"; color: "white"; font.pixelSize: 22; width:36; height:28; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: gimbalLink.jog(0, 5) } }
-                        Text { anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; text: "⌄"; color: "white"; font.pixelSize: 22; width:36; height:28; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: gimbalLink.jog(0, -5) } }
-                        Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "‹"; color: "white"; font.pixelSize: 33; width:28; height:40; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: gimbalLink.jog(-5, 0) } }
-                        Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "›"; color: "white"; font.pixelSize: 33; width:28; height:40; horizontalAlignment:Text.AlignHCenter; MouseArea { anchors.fill:parent; onClicked: gimbalLink.jog(5, 0) } }
+                    // ── 360° 拨杆：杆量 → 云台转向速度（SDK 0x07）──
+                    Item {
+                        id: joy
+                        width: 106; height: 106
+                        readonly property real throwRadius: 34
+                        readonly property real knobRadius: 13
+                        readonly property real deadZone: 0.10      // 中心死区，避免手抖
+                        property real nx: 0                        // -1..1，右为正
+                        property real ny: 0                        // -1..1，上为正
+                        property bool dragging: false
+                        readonly property int yawRate:
+                            Math.abs(nx) < deadZone ? 0 : Math.round(nx * 100)
+                        readonly property int pitchRate:
+                            Math.abs(ny) < deadZone ? 0 : Math.round(ny * 100)
+
+                        function apply(px, py) {
+                            var dx = px - width / 2
+                            var dy = py - height / 2
+                            var dist = Math.sqrt(dx * dx + dy * dy)
+                            if (dist > throwRadius) {
+                                dx = dx / dist * throwRadius
+                                dy = dy / dist * throwRadius
+                            }
+                            nx = dx / throwRadius
+                            ny = -dy / throwRadius                 // 屏幕向下为正，取反
+                            gimbalLink.setRotateRate(yawRate, pitchRate)
+                        }
+                        function release() {
+                            dragging = false
+                            nx = 0
+                            ny = 0
+                            gimbalLink.stopRotate()                // 松手必须发 0
+                        }
+
+                        // 底盘
                         Rectangle {
-                            anchors.centerIn: parent; width: 26; height: 26; radius: 13; color: "#0d2b3f"; border.color: "#1d4a68"
-                            Text { anchors.centerIn: parent; text: "回中"; color: "#cfe0ef"; font.pixelSize: 10 }
-                            MouseArea { anchors.fill: parent; onClicked: gimbalLink.centerGimbal() }
+                            anchors.fill: parent
+                            radius: width / 2
+                            color: "#04121d"
+                            border.color: joy.dragging ? "#0f7fd8" : "#123650"
+                            border.width: 2
+                        }
+                        // 中心十字参考
+                        Rectangle { anchors.centerIn: parent; width: 1; height: parent.height * 0.42; color: "#123a55" }
+                        Rectangle { anchors.centerIn: parent; width: parent.width * 0.42; height: 1; color: "#123a55" }
+                        // 死区圈
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: joy.throwRadius * 2 * joy.deadZone
+                            height: width; radius: width / 2
+                            color: "transparent"; border.color: "#16405e"
+                        }
+                        // 杆量指示线（从中心指向拨杆头）
+                        Rectangle {
+                            visible: joy.nx !== 0 || joy.ny !== 0
+                            width: 2
+                            height: Math.sqrt(joy.nx * joy.nx + joy.ny * joy.ny) * joy.throwRadius
+                            color: "#087dff"
+                            x: joy.width / 2 - 1
+                            y: joy.height / 2 - height
+                            transformOrigin: Item.Bottom
+                            rotation: Math.atan2(joy.nx, joy.ny) * 180 / Math.PI
+                        }
+                        // 拨杆头
+                        Rectangle {
+                            width: joy.knobRadius * 2; height: width; radius: width / 2
+                            color: joy.dragging ? "#087dff" : "#1c4a6b"
+                            border.color: joy.dragging ? "#7fc0ff" : "#2d6d99"; border.width: 1
+                            x: joy.width / 2 + joy.nx * joy.throwRadius - width / 2
+                            y: joy.height / 2 - joy.ny * joy.throwRadius - height / 2
+                            Behavior on x { NumberAnimation { duration: 60 } }
+                            Behavior on y { NumberAnimation { duration: 60 } }
+                            Text { anchors.centerIn: parent; text: "拨杆"; color: "#cfe0ef"; font.pixelSize: 9 }
+                        }
+                        // 杆量读数
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottom: parent.bottom; anchors.bottomMargin: 3
+                            font.pixelSize: 9
+                            color: (joy.yawRate || joy.pitchRate) ? "#00e787" : "#5b7488"
+                            text: "偏航 " + (joy.yawRate > 0 ? "+" : "") + joy.yawRate
+                                + "  俯仰 " + (joy.pitchRate > 0 ? "+" : "") + joy.pitchRate
+                        }
+                        MouseArea {
+                            id: stickMouse
+                            anchors.fill: parent
+                            onPressed: { joy.dragging = true; joy.apply(mouseX, mouseY) }
+                            onPositionChanged: if (joy.dragging) joy.apply(mouseX, mouseY)
+                            onReleased: joy.release()
+                            onCanceled: joy.release()
+                        }
+                        // 持续上报杆量（20Hz）：相机不会自己保持，需要流式下发
+                        Timer {
+                            interval: 50; repeat: true; running: joy.dragging
+                            onTriggered: gimbalLink.setRotateRate(joy.yawRate, joy.pitchRate)
+                        }
+                        // 安全兜底 1：丢过鼠标抬起事件时强制回中（按 Qt 的真实按键状态判断）
+                        Timer {
+                            interval: 300; repeat: true; running: joy.dragging
+                            onTriggered: if (!stickMouse.pressed) joy.release()
+                        }
+                        // 安全兜底 2：窗口失去激活（切走/最小化）立即回中
+                        Connections {
+                            target: window
+                            function onActiveChanged() { if (!window.active && joy.dragging) joy.release() }
                         }
                     }
                     // ── 滑条：绝对角度 / 变倍 ──
@@ -392,8 +486,9 @@ Item {
                         }
                     }
                     Item { width: 8; height: 1 }
+                    GButton { width: 58; height: 30; text: "回中"; onClicked: gimbalLink.centerGimbal() }
                     GButton { width: 58; height: 30; text: "朝下"; onClicked: gimbalLink.lookDown() }
-                    GButton { width: 68; height: 30; text: "软重启"; onClicked: gimbalLink.softReboot() }
+                    GButton { width: 58; height: 30; text: "软重启"; onClicked: gimbalLink.softReboot() }
                 }
 
                 // ── 相机功能 ──
