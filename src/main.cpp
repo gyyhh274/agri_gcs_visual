@@ -20,6 +20,7 @@
 #include "AircraftProfile.h"
 #include "GroundLink.h"
 #include "GimbalLink.h"
+#include "PhotoLibrary.h"
 
 namespace {
 void reportError(const QString &message)
@@ -91,6 +92,7 @@ int main(int argc, char *argv[])
     parser.addOption({QStringLiteral("gimbal-test"), QStringLiteral("Run a gimbal control self test and exit.")});
     parser.addOption({QStringLiteral("gimbal-host"), QStringLiteral("Gimbal relay host used by --gimbal-test."), QStringLiteral("host"), QStringLiteral("192.168.2.113")});
     parser.addOption({QStringLiteral("gimbal-port"), QStringLiteral("Gimbal relay port used by --gimbal-test."), QStringLiteral("port"), QStringLiteral("37260")});
+    parser.addOption({QStringLiteral("start-tab"), QStringLiteral("Task page tab to open at startup (0..3)."), QStringLiteral("index"), QStringLiteral("0")});
     parser.addOption({QStringLiteral("fullscreen"), QStringLiteral("Open full screen.")});
     parser.addOption({QStringLiteral("software"), QStringLiteral("Use the Qt Quick software renderer.")});
     parser.addOption({QStringLiteral("overview"), QStringLiteral("Use the settings overview layout without sidebar.")});
@@ -149,6 +151,7 @@ int main(int argc, char *argv[])
     AircraftProfile aircraftProfile;
     GroundLink groundLink;
     GimbalLink gimbalLink;
+    PhotoLibrary photoLibrary;
     QSettings settings;
     QString tileDirectory = parser.isSet(QStringLiteral("tiles")) ? parser.value(QStringLiteral("tiles"))
         : qEnvironmentVariable("AGRI_GCS_TILE_DIR", settings.value("OfflineMap/directory").toString());
@@ -175,6 +178,9 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("aircraftProfile", &aircraftProfile);
     engine.rootContext()->setContextProperty("groundLink", &groundLink);
     engine.rootContext()->setContextProperty("gimbalLink", &gimbalLink);
+    engine.rootContext()->setContextProperty("photoLibrary", &photoLibrary);
+    engine.rootContext()->setContextProperty(
+        "initialTab", parser.value(QStringLiteral("start-tab")).toInt());
     engine.setInitialProperties({
         {QStringLiteral("pageIndex"), previewPage},
         {QStringLiteral("previewTab"), previewTab},
@@ -244,8 +250,13 @@ int main(int argc, char *argv[])
             gimbalLink.setRotateRate(60, 0);
         });
         QTimer::singleShot(11400, &app, [&gimbalLink]() { gimbalLink.stopRotate(); });
-        QTimer::singleShot(12800, &app, [report, &app]() {
+        QTimer::singleShot(12800, &app, [report, &gimbalLink]() {
             report(QStringLiteral("拨杆右推后"));
+            // 拍照：验证 0x0B 真实反馈，以及 QML 里"拍照成功 → 自动取回"的钩子
+            gimbalLink.takePhoto();
+        });
+        QTimer::singleShot(16000, &app, [report, &app]() {
+            report(QStringLiteral("拍照后"));
             app.exit(0);
         });
     }

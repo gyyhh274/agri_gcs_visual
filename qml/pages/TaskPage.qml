@@ -6,6 +6,8 @@ import "../components"
 Item {
     id: page
     property int contentTab: 0
+    // 启动时默认展示的页签（可用 --start-tab 覆盖，便于截图与自动化验证）
+    property int startupTab: (typeof initialTab !== "undefined") ? initialTab : 0
     property string missionState: "未接入任务控制"
     property bool nestOpen: false
     property bool charging: true
@@ -33,11 +35,34 @@ Item {
 
     function connectGimbal() {
         gimbalLink.connectToGimbal(gimbalHost, gimbalPort)
+        // 照片库走同一台机载电脑上的 HTTP 代理（中转服务的 37261 端口）
+        photoLibrary.setEndpoint(gimbalHost, gimbalPort + 1)
         actionMessage("云台链路：" + gimbalHost + ":" + gimbalPort)
     }
 
     Connections {
         target: gimbalLink
+        function onNotified(text) { page.actionMessage(text) }
+        // 拍照成功 → 相机写完文件后自动取回最新一张，立即出现在图片列表
+        function onPhotoSucceeded() {
+            photoResyncTimer.restart()
+        }
+        // 拍照失败（例如没插 TF 卡）就不用去取图了
+        function onPhotoFailed(reason) {
+            photoResyncTimer.stop()
+        }
+    }
+
+    Timer {
+        // 相机写完文件需要一点时间（实测约 1~2 秒），稍等再同步
+        id: photoResyncTimer
+        interval: 1800
+        repeat: false
+        onTriggered: photoLibrary.fetchNewest()
+    }
+
+    Connections {
+        target: photoLibrary
         function onNotified(text) { page.actionMessage(text) }
     }
 
@@ -51,8 +76,11 @@ Item {
     Component.onCompleted: {
         var saved = savedRouteJson()
         if (saved.length) importRoute(saved)
+        contentTab = startupTab
         // 面板就绪后自动连接云台中转（地址由视频流地址推导）
         Qt.callLater(connectGimbal)
+        // 启动时后台同步一次照片列表（相机里已有的照片会逐步缓存到本机）
+        Qt.callLater(function() { photoLibrary.refresh() })
     }
     function validCoordinate(lat, lon) {
         return isFinite(lat) && isFinite(lon) && Math.abs(lat) <= 85.05112878 && Math.abs(lon) <= 180
@@ -607,11 +635,18 @@ Item {
         id: photoView
         Item {
             Row { x: 9; y: 8; spacing: 10
-                GField { width: 145; height: 34; text: "2024-12-26" }
-                GField { width: 126; height: 34; text: "全部航点" }
-                GField { width: 126; height: 34; text: "全部动作" }
+                GButton {
+                    width: 112; height: 34
+                    text: photoLibrary.busy ? "同步中…" : "刷新列表"
+                    onClicked: photoLibrary.refresh()
+                }
+                GButton { width: 150; height: 34; text: "取回最新一张"; onClicked: photoLibrary.fetchNewest() }
                 GField { id: photoSearch; width: 208; height: 34; placeholder: "搜索图片名称" }
-                GButton { width: 112; height: 34; text: "批量下载"; onClicked: page.actionMessage("当前为参考图片，未连接媒体存储") }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: "#8fa6ba"; font.pixelSize: 12
+                    text: photoLibrary.status
+                }
             }
             Flickable {
                 objectName: "taskPhotoScroll"
@@ -621,28 +656,57 @@ Item {
                 clip: true; boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {}
                 Grid {
-                id: photoGrid
-                width: parent.width; columns: 6; spacing: 10
-                Repeater { model: Math.min(18,86-page.photoPage*18)
-                    delegate: Item {
-                        property int number: page.photoPage*18+index+1
-                        property string filename: "IMG_" + ("000"+number).slice(-4)+".jpg"
-                        property bool selected: false
-                        width: 123; height: 112
-                        visible: filename.toLowerCase().indexOf(photoSearch.text.toLowerCase()) >= 0
-                        MediaThumb { width:123; height:76; photoIndex:index }
-                        MouseArea { anchors.fill:parent; onClicked:{page.inspectedPhoto=index; photoDialog.open()} }
-                        Rectangle { x: 4; y: 4; width: 15; height: 15; radius:2; color: parent.selected ? "#087dff" : "#345066"; border.color: "#cfe0ef"; MouseArea {anchors.fill:parent; onClicked:parent.parent.selected=!parent.parent.selected} }
-                        Text { y: 80; text: parent.filename; color: "#dce9f7"; font.pixelSize: 12 }
-                        Text { y: 98; text: "15:" + (22 + Math.floor(index/3)) + ":" + (10 + index) + "    航点" + (Math.floor(index/2)+1); color: "#8fa6ba"; font.pixelSize: 11 }
+                    id: photoGrid
+                    width: parent.width; columns: 6; spacing: 10
+                    Repeater {
+                        // 数据来自相机 TF 卡：photoLibrary 会自动把照片缓存到本机
+                        model: photoLibrary.photos
+                        delegate: Item {
+                            property var entry: modelData
+                            width: 123; height: 112
+                            visible: entry.name.toLowerCase().indexOf(photoSearch.text.toLowerCase()) >= 0
+                            Rectangle {
+                                width: 123; height: 76; color: "#0a1c2b"; border.color: "#1d3b52"
+                                Image {
+                                    anchors.fill: parent; anchors.margins: 1
+                                    asynchronous: true; cache: false
+                                    fillMode: Image.PreserveAspectCrop
+                                    source: entry.ready ? entry.localPath : ""
+                                }
+                                Text {
+                                    anchors.centerIn: parent
+                                    visible: !entry.ready
+                                    color: "#5b7488"; font.pixelSize: 11
+                                    text: "下载中…"
+                                }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: { page.inspectedPhoto = index; photoDialog.open() }
+                            }
+                            Text {
+                                y: 80; width: 123; elide: Text.ElideMiddle
+                                text: entry.name; color: "#dce9f7"; font.pixelSize: 12
+                            }
+                            Text {
+                                y: 98
+                                text: entry.ready ? (entry.sizeKB + " KB    已缓存") : "未缓存"
+                                color: entry.ready ? "#00db80" : "#8fa6ba"; font.pixelSize: 11
+                            }
+                        }
                     }
-                }
                 }
             }
             Row { id: photoPagination; anchors.bottom:parent.bottom; anchors.bottomMargin:10; anchors.right:parent.right; anchors.rightMargin:12; spacing:6
-                Text { text:"共 86 张"; color:"#aebfd0"; font.pixelSize:12; anchors.verticalCenter:parent.verticalCenter }
-                Repeater { model:5; delegate:GButton {width:29; height:29; text:String(index+1); fill:page.photoPage===index?"#087dff":"#061522"; onClicked:page.photoPage=index} }
-                GButton { text:"18 张/页"; width:88; height:29; fill:"#061522"; onClicked:page.actionMessage("每页展示18张参考图片") }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    color:"#aebfd0"; font.pixelSize:12
+                    text: "共 " + photoLibrary.count + " 张"
+                }
+                GButton {
+                    width: 88; height: 29; fill:"#061522"; text:"打开缓存目录"
+                    onClicked: page.actionMessage("缓存目录：" + photoLibrary.cacheDirectory)
+                }
             }
         }
     }
@@ -719,7 +783,38 @@ Item {
     Popup {
         id:photoDialog; width:910; height:630; x:(page.width-width)/2; y:(page.height-height)/2; modal:true; focus:true
         background:Rectangle {color:"#061522"; border.color:"#087dff"; radius:5}
-        contentItem:Item { MediaThumb {anchors.fill:parent; anchors.bottomMargin:40; photoIndex:page.inspectedPhoto} GButton {anchors.bottom:parent.bottom; anchors.right:parent.right; text:"关闭预览"; onClicked:photoDialog.close()} }
+        contentItem:Item {
+            // 显示相机里真实取回的照片（本地缓存路径）
+            Image {
+                id: previewImage
+                anchors.fill: parent; anchors.bottomMargin: 44
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                source: {
+                    var list = photoLibrary.photos
+                    if (page.inspectedPhoto < 0 || page.inspectedPhoto >= list.length) return ""
+                    var item = list[page.inspectedPhoto]
+                    return item.ready ? item.localPath : ""
+                }
+            }
+            Text {
+                anchors.centerIn: parent
+                visible: previewImage.status !== Image.Ready
+                color: "#8fa6ba"; font.pixelSize: 14
+                text: previewImage.source === "" ? "该照片尚未取回本地" : "正在载入…"
+            }
+            Text {
+                anchors.left: parent.left; anchors.leftMargin: 10; anchors.bottom: parent.bottom; anchors.bottomMargin: 12
+                color: "#cfe0ef"; font.pixelSize: 13
+                text: {
+                    var list = photoLibrary.photos
+                    if (page.inspectedPhoto < 0 || page.inspectedPhoto >= list.length) return ""
+                    var item = list[page.inspectedPhoto]
+                    return item.name + (item.ready ? "    " + item.sizeKB + " KB" : "    （未缓存）")
+                }
+            }
+            GButton {anchors.bottom:parent.bottom; anchors.bottomMargin:6; anchors.right:parent.right; anchors.rightMargin:10; text:"关闭预览"; onClicked:photoDialog.close()}
+        }
     }
 
     Rectangle {
