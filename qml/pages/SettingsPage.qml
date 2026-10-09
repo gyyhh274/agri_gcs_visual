@@ -246,8 +246,11 @@ Item {
                                 onClicked: VideoConfig.enabled = !VideoConfig.enabled
                             }
                         }
+                        // 「自定义地址」只在使用自定义预设时才需要显示，
+                        // 平时隐藏以腾出纵向空间（卡片内容区已接近上限）
                         Row {
-                            width: parent.width; height: 31
+                            width: parent.width; height: visible ? 31 : 0
+                            visible: VideoConfig.presetIndex === VideoConfig.presetNames.length - 1
                             FormLabel { width: 114; text: "自定义地址" }
                             ValueField {
                                 width: parent.width - 114
@@ -314,13 +317,26 @@ Item {
                                 onClicked: VideoConfig.reconnectRequest += 1
                             }
                         }
-                        Row { width: parent.width; height: 31; FormLabel { width: 114; text: "机载协议" } FormLabel { width: 260; text: "ROS/TCP 遥测（只读）" } }
+                        // 机载遥测与云台/照片地址合并展示（原「机载协议」与
+                        // 「网关端口」分两行，超出了卡片可用高度）
                         Row {
                             width: parent.width; height: 33
-                            FormLabel { width: 114; text: "网关端口" }
-                            ValueField { width: 168; text: page.values.dronePort; onTextEdited: page.setValue("dronePort", text) }
-                            Item { width: parent.width - 384; height: 1 }
-                            GButton { width: 102; height: 33; text: "测试连接"; fill: "#087dff"; onClicked: { groundLink.connectToGateway(String(page.values.droneIp), Number(page.values.dronePort)); page.notify(groundLink.status) } }
+                            FormLabel { width: 114; text: "机载遥测" }
+                            FormLabel { width: 118; text: "ROS/TCP（只读）"; color: "#8fa6ba"; font.pixelSize: 11 }
+                            ValueField { width: 92; text: page.values.dronePort; onTextEdited: page.setValue("dronePort", text) }
+                            Item { width: 6; height: 1 }
+                            GButton { width: 96; height: 33; text: "测试连接"; fill: "#087dff"; onClicked: { groundLink.connectToGateway(String(page.values.droneIp), Number(page.values.dronePort)); page.notify(groundLink.status) } }
+                        }
+                        // 云台与照片库的地址不在本页配置：它们与视频中转同机，
+                        // 主机名从上面的「视频流地址」自动推导，端口固定。
+                        Row {
+                            width: parent.width; height: 30
+                            FormLabel { width: 114; text: "云台 / 照片" }
+                            FormLabel {
+                                width: parent.width - 114
+                                text: VideoConfig.gimbalEndpoint + " · " + VideoConfig.photoEndpoint + "（随视频地址自动推导）"
+                                color: "#8fa6ba"; font.pixelSize: 11
+                            }
                         }
                     }
                 }

@@ -7,7 +7,7 @@ Item {
     id: page
     property int contentTab: 0
     // 启动时默认展示的页签（可用 --start-tab 覆盖，便于截图与自动化验证）
-    property int startupTab: (typeof initialTab !== "undefined") ? initialTab : 0
+    property int startupTab: initialTab
     property string missionState: "未接入任务控制"
     property bool nestOpen: false
     property bool charging: true
@@ -25,18 +25,16 @@ Item {
     Settings { id: routeStore; category: "MissionDemo" }
 
     // ── 云台链路 ──────────────────────────────────────────────
-    // 相机只对机载电脑可达，实际连的是机载电脑上的 UDP 中转；
-    // 中转与视频中转（MediaMTX）跑在同一台机器上，所以主机名从视频地址推导。
-    readonly property string gimbalHost: {
-        var match = /^rtsp:\/\/(?:[^@\/]*@)?([^:\/]+)/.exec(VideoConfig.url)
-        return match ? match[1] : "192.168.2.113"
-    }
-    readonly property int gimbalPort: 37260
+    // 相机只对机载电脑可达，实际连的是机载电脑上的 UDP 中转。
+    // 中转与视频中转（MediaMTX）跑在同一台机器上，所以主机名从视频地址推导
+    // （统一放在 VideoConfig.relayHost，避免两处各写一份正则）。
+    readonly property string gimbalHost: VideoConfig.relayHost
+    readonly property int gimbalPort: VideoConfig.gimbalPort
 
     function connectGimbal() {
         gimbalLink.connectToGimbal(gimbalHost, gimbalPort)
         // 照片库走同一台机载电脑上的 HTTP 代理（中转服务的 37261 端口）
-        photoLibrary.setEndpoint(gimbalHost, gimbalPort + 1)
+        photoLibrary.setEndpoint(gimbalHost, VideoConfig.photoPort)
         actionMessage("云台链路：" + gimbalHost + ":" + gimbalPort)
     }
 

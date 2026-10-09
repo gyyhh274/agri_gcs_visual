@@ -93,6 +93,8 @@ int main(int argc, char *argv[])
     parser.addOption({QStringLiteral("gimbal-host"), QStringLiteral("Gimbal relay host used by --gimbal-test."), QStringLiteral("host"), QStringLiteral("192.168.2.113")});
     parser.addOption({QStringLiteral("gimbal-port"), QStringLiteral("Gimbal relay port used by --gimbal-test."), QStringLiteral("port"), QStringLiteral("37260")});
     parser.addOption({QStringLiteral("start-tab"), QStringLiteral("Task page tab to open at startup (0..3)."), QStringLiteral("index"), QStringLiteral("0")});
+    parser.addOption({QStringLiteral("start-page"), QStringLiteral("Top page to open at startup: 0 task, 1 log, 2 settings."), QStringLiteral("index"), QStringLiteral("0")});
+    parser.addOption({QStringLiteral("start-section"), QStringLiteral("Section index inside the settings page."), QStringLiteral("index"), QStringLiteral("0")});
     parser.addOption({QStringLiteral("fullscreen"), QStringLiteral("Open full screen.")});
     parser.addOption({QStringLiteral("software"), QStringLiteral("Use the Qt Quick software renderer.")});
     parser.addOption({QStringLiteral("overview"), QStringLiteral("Use the settings overview layout without sidebar.")});
@@ -181,6 +183,15 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("photoLibrary", &photoLibrary);
     engine.rootContext()->setContextProperty(
         "initialTab", parser.value(QStringLiteral("start-tab")).toInt());
+    engine.rootContext()->setContextProperty(
+        "initialPage", parser.value(QStringLiteral("start-page")).toInt());
+    engine.rootContext()->setContextProperty(
+        "initialSection", parser.value(QStringLiteral("start-section")).toInt());
+    std::fprintf(stdout, "[main] start-page=%s start-tab=%s start-section=%s\n",
+                 qPrintable(parser.value(QStringLiteral("start-page"))),
+                 qPrintable(parser.value(QStringLiteral("start-tab"))),
+                 qPrintable(parser.value(QStringLiteral("start-section"))));
+    std::fflush(stdout);
     engine.setInitialProperties({
         {QStringLiteral("pageIndex"), previewPage},
         {QStringLiteral("previewTab"), previewTab},

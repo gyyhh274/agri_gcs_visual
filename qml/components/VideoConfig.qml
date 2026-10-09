@@ -44,6 +44,26 @@ Item {
     readonly property var codecNames: ["自动识别", "H.264", "H.265"]
     readonly property var transportNames: ["TCP（推荐）", "UDP"]
 
+    /* ── 从视频流地址推导出的机载服务地址 ─────────────────────────
+     *
+     * 云台控制中转与照片文件代理都跑在【同一台机载电脑】上（就是视频中转
+     * MediaMTX 所在的那台），所以它们的地址统一从视频流地址里取主机名，
+     * 端口固定：
+     *     云台控制   主机:37260（UDP）
+     *     照片/文件  主机:37261（HTTP）
+     *
+     * 这样只需要配一处地址，不会出现"视频连的是这台、云台连的是那台"的
+     * 不一致；换机器时只改视频流地址即可。
+     */
+    readonly property string relayHost: {
+        var match = /^rtsp:\/\/(?:[^@\/]*@)?([^:\/]+)/.exec(url)
+        return match ? match[1] : "192.168.2.113"
+    }
+    readonly property int gimbalPort: 37260
+    readonly property int photoPort: 37261
+    readonly property string gimbalEndpoint: relayHost + ":" + gimbalPort
+    readonly property string photoEndpoint: relayHost + ":" + photoPort
+
     // ── 持久化字段 ──────────────────────────────────────────────
     property int presetIndex: 0
     property string customUrl: "rtsp://192.168.2.113:8554/a8mini"

@@ -13,9 +13,18 @@ ApplicationWindow {
     title: "无人机地面站"
     color: "#020d16"
 
+    // 启动页/分组可由命令行指定（--start-page / --start-section）。
+    // initialPage / initialSection 是 C++ 注入的上下文属性，始终存在。
+    // ⚠️ 不要写成绑定 `property int pageIndex: initialPage`：
+    //    实测这种形式会静默回落到类型默认值 0（不报错），
+    //    必须在 Component.onCompleted 里显式赋值。
     property int pageIndex: 0
     property int previewTab: 0
     property int previewSection: 0
+    Component.onCompleted: {
+        pageIndex = initialPage
+        previewSection = initialSection
+    }
     property bool previewMode: false
     property bool overviewSettings: false
     property real designScale: Math.min(width / 1536, height / 1024)
