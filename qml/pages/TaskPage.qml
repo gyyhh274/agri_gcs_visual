@@ -297,6 +297,13 @@ Item {
                         color: gimbalLink.recordStatus === 1 ? "#ff6b6b" : "#9fb4c6"; font.pixelSize: 12
                         text: gimbalLink.recordStatusName + " · " + gimbalLink.modeName
                     }
+                    // 相机没插 TF 卡时拍照/录像都会失败，必须显眼提示
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !gimbalLink.tfCardPresent
+                        color: "#ff9a3c"; font.pixelSize: 12; font.bold: true
+                        text: "⚠ " + gimbalLink.tfCardText
+                    }
                     GButton { width: 56; height: 28; text: "重连"; onClicked: page.connectGimbal() }
                 }
 

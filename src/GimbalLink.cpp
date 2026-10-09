@@ -15,6 +15,7 @@ constexpr quint8 kCmdZoomStep = 0x05;
 constexpr quint8 kCmdRotate = 0x07;
 constexpr quint8 kCmdCenter = 0x08;
 constexpr quint8 kCmdSystemInfo = 0x0A;
+constexpr quint8 kCmdCameraFeedback = 0x0B;   // 拍照/录像的真实结果走这条
 constexpr quint8 kCmdCameraFunction = 0x0C;
 constexpr quint8 kCmdGetAttitude = 0x0D;
 constexpr quint8 kCmdSetAttitude = 0x0E;
@@ -31,6 +32,37 @@ constexpr quint8 kFuncModeLock = 0x03;
 constexpr quint8 kFuncModeFollow = 0x04;
 constexpr quint8 kFuncModeFpv = 0x05;
 constexpr quint8 kFuncLookDown = 0x09;
+
+// 0x0B 相机功能反馈的 info_type
+constexpr quint8 kFeedbackPhotoOk = 0x00;
+constexpr quint8 kFeedbackPhotoNoCard = 0x01;
+constexpr quint8 kFeedbackHdrOn = 0x02;
+constexpr quint8 kFeedbackHdrOff = 0x03;
+constexpr quint8 kFeedbackRecordNoCard = 0x04;
+constexpr quint8 kFeedbackRecordStart = 0x05;
+constexpr quint8 kFeedbackRecordStop = 0x06;
+
+QString feedbackText(quint8 infoType)
+{
+    switch (infoType) {
+    case kFeedbackPhotoOk:
+        return QStringLiteral("拍照成功");
+    case kFeedbackPhotoNoCard:
+        return QStringLiteral("拍照失败：相机未插入 TF 卡");
+    case kFeedbackHdrOn:
+        return QStringLiteral("HDR 已开启");
+    case kFeedbackHdrOff:
+        return QStringLiteral("HDR 已关闭");
+    case kFeedbackRecordNoCard:
+        return QStringLiteral("录像失败：相机未插入 TF 卡");
+    case kFeedbackRecordStart:
+        return QStringLiteral("已开始录像");
+    case kFeedbackRecordStop:
+        return QStringLiteral("已结束录像");
+    default:
+        return QStringLiteral("相机反馈（未知类型 %1）").arg(infoType);
+    }
+}
 
 qint64 nowMs()
 {
@@ -93,6 +125,11 @@ QString GimbalLink::recordStatusName() const
     default:
         return QStringLiteral("未知");
     }
+}
+
+QString GimbalLink::tfCardText() const
+{
+    return m_tfCardPresent ? QStringLiteral("TF 卡正常") : QStringLiteral("未插 TF 卡");
 }
 
 quint16 GimbalLink::crc16Ccitt(const QByteArray &data)
@@ -274,13 +311,56 @@ void GimbalLink::decodePayload(quint8 command, const QByteArray &payload)
         }
         break;
     case kCmdSystemInfo:
-        // 字节[3] = 录像状态
+        // 字节[3] = 录像状态：0未录像 1录像中 2未插TF卡 3TF卡丢数据
         if (payload.size() >= 4) {
             const int status = static_cast<quint8>(payload.at(3));
             if (status != m_recordStatus) {
                 m_recordStatus = status;
                 emit changed();
             }
+            // status==2 同时也说明没卡；其它状态视为有卡（避免误报）
+            const bool card = (status != 2);
+            if (card != m_tfCardPresent) {
+                m_tfCardPresent = card;
+                emit changed();
+            }
+        }
+        break;
+    case kCmdCameraFeedback:
+        // 拍照/录像的真实结果。0x0C 本身无 ACK，成败只能从这里得知。
+        if (payload.size() >= 1) {
+            const quint8 info = static_cast<quint8>(payload.at(0));
+            const QString text = feedbackText(info);
+            if (text != m_lastFeedback) {
+                m_lastFeedback = text;
+                emit feedbackChanged();
+            }
+            switch (info) {
+            case kFeedbackPhotoOk:
+                emit photoSucceeded();
+                break;
+            case kFeedbackPhotoNoCard:
+                m_tfCardPresent = false;
+                emit changed();
+                emit photoFailed(QStringLiteral("相机未插入 TF 卡"));
+                break;
+            case kFeedbackRecordNoCard:
+                m_tfCardPresent = false;
+                emit changed();
+                break;
+            case kFeedbackRecordStart:
+                m_recordStatus = 1;
+                emit changed();
+                break;
+            case kFeedbackRecordStop:
+                m_recordStatus = 0;
+                emit changed();
+                break;
+            default:
+                break;
+            }
+            emit cameraFeedback(info, text);
+            emit notified(text);
         }
         break;
     case kCmdGimbalMode:

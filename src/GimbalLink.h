@@ -51,6 +51,9 @@ class GimbalLink final : public QObject {
     Q_PROPERTY(int yawRate READ yawRate NOTIFY rotateChanged)
     Q_PROPERTY(int pitchRate READ pitchRate NOTIFY rotateChanged)
     Q_PROPERTY(bool rotating READ rotating NOTIFY rotateChanged)
+    Q_PROPERTY(bool tfCardPresent READ tfCardPresent NOTIFY changed)
+    Q_PROPERTY(QString tfCardText READ tfCardText NOTIFY changed)
+    Q_PROPERTY(QString lastFeedback READ lastFeedback NOTIFY feedbackChanged)
     Q_PROPERTY(double yawLimit READ yawLimit CONSTANT)
     Q_PROPERTY(double pitchMin READ pitchMin CONSTANT)
     Q_PROPERTY(double pitchMax READ pitchMax CONSTANT)
@@ -75,6 +78,9 @@ public:
     int yawRate() const { return m_lastYawRate; }
     int pitchRate() const { return m_lastPitchRate; }
     bool rotating() const { return m_lastYawRate != 0 || m_lastPitchRate != 0; }
+    bool tfCardPresent() const { return m_tfCardPresent; }
+    QString tfCardText() const;
+    QString lastFeedback() const { return m_lastFeedback; }
 
     // A8 mini 的角度与变倍限位（来自 SDK 文档）
     double yawLimit() const { return kYawLimit; }
@@ -113,7 +119,14 @@ signals:
     void changed();
     void attitudeChanged();
     void rotateChanged();
+    void feedbackChanged();
     void notified(const QString &text);
+    /* 相机功能反馈（SDK 0x0B）。
+     * 拍照/录像的真实结果走这条通道，而不是 0x0C 的应答 ——
+     * 0x0C 是"无 ACK"的，只发指令无法知道成败。 */
+    void cameraFeedback(int infoType, const QString &text);
+    void photoSucceeded();
+    void photoFailed(const QString &reason);
 
 private slots:
     void onReadyRead();
@@ -173,6 +186,8 @@ private:
 
     bool m_connected{false};
     bool m_attitudeFresh{false};
+    bool m_tfCardPresent{true};
+    QString m_lastFeedback;
     QString m_status{QStringLiteral("未连接云台")};
     QString m_endpoint;
 
