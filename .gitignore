@@ -2,3 +2,7 @@ build/
 build-*/
 .DS_Store
 *.user
+
+# Python 字节码缓存（语法检查会生成）
+__pycache__/
+*.pyc
