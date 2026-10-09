@@ -1,21 +1,30 @@
 # 机载电脑（Jetson）部署说明
 
-地面站要连的两样东西都在机载电脑上：**视频中转（MediaMTX）** 和
-**云台控制中转（siyi-gimbal-relay）**。相机在 `192.168.144.0/24` 网段，
+地面站要连的东西都在机载电脑上：**视频中转（MediaMTX）** 和
+**云台/文件中转（siyi-gimbal-relay）**。相机在 `192.168.144.0/24` 网段，
 只有机载电脑能直达，地面站通过 Wi-Fi 访问机载电脑。
 
 ```text
-地面站                        机载电脑 192.168.2.113               相机 192.168.144.25
-  ├─ RTSP 8554  ──────────►  MediaMTX（视频中转）  ──────────►  :8554/main.264 (H.265)
-  └─ UDP 37260  ──────────►  siyi-gimbal-relay    ──────────►  :37260 (SIYI SDK)
+地面站                    机载电脑 192.168.2.113            相机 192.168.144.25
+  ├─ RTSP 8554 ────────► MediaMTX（视频中转） ──────────► :8554/main.264 (H.265)
+  ├─ UDP 37260 ────────► siyi-gimbal-relay   ──────────► :37260 (SIYI SDK 指令)
+  └─ HTTP 37261 ───────►   └ 内置 HTTP 代理   ──────────► :82  (照片/视频文件接口)
 ```
 
-## 1. 云台控制中转
+## 1. 云台与文件中转
 
 | 文件 | 部署位置 |
 | --- | --- |
 | `siyi_gimbal_relay.py` | `/usr/local/bin/siyi_gimbal_relay.py` |
 | `siyi-gimbal-relay.service` | `/etc/systemd/system/` |
+
+**一键安装（推荐，带 sudo 与版本自检）**：
+
+```bash
+sudo bash install_relay.sh
+```
+
+手动安装：
 
 ```bash
 sudo install -m 755 siyi_gimbal_relay.py /usr/local/bin/siyi_gimbal_relay.py
@@ -24,6 +33,13 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now siyi-gimbal-relay
 systemctl status siyi-gimbal-relay
 ```
+
+该服务同时提供两个端口：
+
+| 端口 | 协议 | 用途 |
+| --- | --- | --- |
+| 37260 | UDP | 云台 SDK 指令中转（单一持久上游 socket） |
+| 37261 | HTTP | 相机文件接口只读代理（照片/视频列表与下载） |
 
 ### 它解决的两个问题
 

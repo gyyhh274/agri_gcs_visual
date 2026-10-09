@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SIYI 云台 UDP 中转服务（跑在机载电脑 / Jetson 上）—— v2
+"""SIYI 云台 UDP 中转服务（跑在机载电脑 / Jetson 上）—— v3
+
+包含两个对外服务：
+
+  1. UDP 37260 —— 云台 SDK 指令中转（地面站 ↔ 相机）
+  2. TCP 37261 —— 相机的 HTTP 文件接口代理（照片/视频的列表与下载）
 
 背景（实测踩坑记录，2026-10-07）：
   1. A8 mini 的 UDP SDK 是【单客户端】模型：它把会话绑在一个源端口上。
@@ -11,22 +16,38 @@
      实测对 UDP 发送 0x00 会让相机的命令服务挂死（TCP 端口也变为拒绝连接），
      恢复办法是发送 0x80 软重启并等待约 20~40 秒。
      → v2 直接【丢弃所有 0x00 帧】，不转发给相机。
+  3. 拍照/录像的真实结果由相机通过 CMD 0x0B 主动回传，
+     0x0C 本身是"无 ACK"的（地面站据此显示真实成败）。
+
+相机文件接口（HTTP，无需认证）：
+  GET http://192.168.144.25:82/cgi-bin/media.cgi/api/v1/getdirectories?media_type=0
+  GET .../getmediacount?media_type=0&path=101SIYI_IMG
+  GET .../getmedialist?media_type=0&path=101SIYI_IMG&start=0&count=20
+  GET http://192.168.144.25:82/photo/101SIYI_IMG/IMG_0001.jpg   ← 实际文件
 
 协议帧：55 66 | control | len(2,LE) | seq(2,LE) | cmd(1) | payload | crc16(2,LE)
 """
+import binascii
+import http.server
 import select
 import socket
 import struct
 import sys
+import threading
 import time
-import binascii
+import urllib.error
+import urllib.request
 
 CAM_ADDR = ("192.168.144.25", 37260)
+CAM_HTTP = "http://192.168.144.25:82"     # 相机 Web Server（文件接口）
 LISTEN_ADDR = ("0.0.0.0", 37260)
+PROXY_ADDR = ("0.0.0.0", 37261)           # HTTP 代理监听（给地面站用）
 CMD_HEARTBEAT = 0x00          # 仅 TCP 支持，UDP 发送会导致相机挂死，必须丢弃
 CMD_ROTATE = 0x07             # 云台转向（流式速度指令，必须显式发 0 才停）
 ROTATE_DEADMAN_SEC = 1.0      # 地面站超过这个时间没有新的转向指令，就替它发停止
 CLIENT_IDLE_SEC = 600.0       # 超过这个时间没有客户端活动就不记录日志
+HTTP_TIMEOUT_SEC = 30.0
+HTTP_CHUNK = 65536
 
 
 def log(msg):
@@ -56,6 +77,74 @@ def rotate_is_active(data):
     return len(data) >= 10 and (data[8] != 0 or data[9] != 0)
 
 
+class CameraHttpProxy(http.server.BaseHTTPRequestHandler):
+    """把地面站的 HTTP 请求透传给相机 Web Server（端口 82）。
+
+    地面站与相机不同网段，照片/视频的列表与下载都只能经由机载电脑。
+    这里只做只读透传：GET/HEAD 原样转发，路径照搬。
+    """
+
+    server_version = "siyi-cam-proxy/1.0"
+    protocol_version = "HTTP/1.1"
+
+    def _forward(self, send_body):
+        target = CAM_HTTP + self.path
+        try:
+            request = urllib.request.Request(target, method="GET")
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SEC) as response:
+                self.send_response(response.status)
+                content_type = response.headers.get("Content-Type", "application/octet-stream")
+                self.send_header("Content-Type", content_type)
+                length = response.headers.get("Content-Length")
+                if length:
+                    self.send_header("Content-Length", length)
+                # 无论有没有 Content-Length 都断开连接：
+                # 相机有时用 chunked 编码（没有 Content-Length），若保持
+                # keep-alive，客户端会一直等响应体直到超时
+                #（Qt 会报 "Operation canceled"，实测踩过）。
+                self.send_header("Connection", "close")
+                self.close_connection = True
+                self.end_headers()
+                if not send_body:
+                    return
+                total = 0
+                while True:
+                    chunk = response.read(HTTP_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    total += len(chunk)
+                log("media-proxy: %s -> %d 字节" % (self.path[:70], total))
+        except urllib.error.HTTPError as error:
+            log("media-proxy: %s 相机返回 HTTP %s" % (self.path[:70], error.code))
+            self.send_error(error.code, "camera returned %s" % error.code)
+        except Exception as error:                      # noqa: BLE001
+            log("media-proxy: %s 失败: %s" % (self.path[:70], error))
+            try:
+                self.send_error(502, "camera unreachable")
+            except Exception:                           # noqa: BLE001
+                pass
+
+    def do_GET(self):                                   # noqa: N802
+        self._forward(True)
+
+    def do_HEAD(self):                                  # noqa: N802
+        self._forward(False)
+
+    def log_message(self, fmt, *args):
+        # 默认实现会往 stderr 打日志，这里改走统一日志格式
+        if "code" not in fmt:
+            log("media-proxy: " + (fmt % args))
+
+
+def start_http_proxy():
+    server = http.server.ThreadingHTTPServer(PROXY_ADDR, CameraHttpProxy)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, name="camera-http-proxy", daemon=True)
+    thread.start()
+    return server
+
+
 def main():
     downstream = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     downstream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -73,13 +162,19 @@ def main():
     rotate_active = False        # 相机当前是否被命令持续转向
     last_rotate_at = 0.0
 
-    log("siyi-gimbal-relay v2 启动")
-    log("  监听 %s:%d（UDP）" % LISTEN_ADDR)
+    log("siyi-gimbal-relay v3 启动")
+    log("  监听 %s:%d（UDP，云台指令）" % LISTEN_ADDR)
     log("  上游 %s:%d（单一持久 socket，本地端口 %d）"
         % (CAM_ADDR[0], CAM_ADDR[1], upstream.getsockname()[1]))
     log("  安全策略: 丢弃 CMD 0x00（心跳，UDP 不支持）")
     log("  安全策略: CMD 0x07 转向死手保护 %.1f 秒（地面站失联自动停转）"
         % ROTATE_DEADMAN_SEC)
+    try:
+        start_http_proxy()
+        log("  HTTP 代理 %s:%d → %s（照片/视频文件接口，只读）"
+            % (PROXY_ADDR[0], PROXY_ADDR[1], CAM_HTTP))
+    except OSError as error:
+        log("!! HTTP 代理启动失败（端口被占用？）: %s" % error)
 
     while True:
         readable, _, _ = select.select([downstream, upstream], [], [], 0.2)

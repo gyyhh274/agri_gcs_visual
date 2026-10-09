@@ -201,7 +201,67 @@ SDK 文档写得很清楚：`0x00：TCP心跳` / `心跳包：55 66 01 01 00 00 
 
 ---
 
-## 5. 地面站侧实现
+## 5. 照片取回（拍完自动出现在图片列表）
+
+相机把照片存在 TF 卡上，并对外提供**无需认证的 HTTP 文件接口**（端口 82）。
+地面站与相机不同网段，所以经机载电脑上的中转服务做 HTTP 代理。
+
+```text
+地面站 PhotoLibrary ──HTTP──► 机载电脑 :37261（中转服务内置代理）
+                                   └──► 相机 :82 /cgi-bin/media.cgi/api/v1/...
+                                        └──► /photo/101SIYI_IMG/IMG_0001.jpg
+```
+
+### 5.1 相机文件接口（SDK 第七章）
+
+| 用途 | 请求 |
+| --- | --- |
+| 目录列表 | `GET /cgi-bin/media.cgi/api/v1/getdirectories?media_type=0` |
+| 文件个数 | `GET .../getmediacount?media_type=0&path=101SIYI_IMG` |
+| 文件列表 | `GET .../getmedialist?media_type=0&path=101SIYI_IMG&start=0&count=200` |
+| 下载文件 | 用列表里返回的 `url`（形如 `http://<相机>:82/photo/101SIYI_IMG/IMG_0001.jpg`） |
+
+* `media_type`：0 = 图片，1 = 视频
+* 图片目录固定 `101SIYI_IMG`，视频目录 `100SIYI_VID`
+* 列表按文件名**升序**返回，最新的在最后（地面站会反转，让最新排最前）
+
+### 5.2 地面站侧实现
+
+`src/PhotoLibrary.{h,cpp}`（QML 上下文属性 `photoLibrary`）：
+
+```qml
+photoLibrary.refresh()        // 拉列表 + 下载本地还没有的照片
+photoLibrary.fetchNewest()    // 只同步最新一张（拍照后调用）
+photoLibrary.photos           // 列表：{name, ready, localPath, sizeKB}
+photoLibrary.count / busy / status / cacheDirectory
+```
+
+* 照片缓存到本机 `~/.cache/Agri GCS/无人机地面站/photos/`，
+  QML 用本地 `file://` 路径显示，滚动不会重复走网络。
+* 下载是**串行**的（一次一张），避免同时压满相机。
+
+### 5.3 自动流程
+
+```text
+点击「拍照」→ 0x0C/00 → 相机回 0x0B（info_type=0 拍照成功）
+           → QML 收到 photoSucceeded → 等 1.8 秒（等相机写完文件）
+           → photoLibrary.fetchNewest() → 下载 → 图片列表立即出现新照片
+```
+
+实测：从快门到本地缓存约 **2 秒**。拍照失败（例如没插 TF 卡）时
+`photoFailed` 会取消这次同步，不会白跑一趟。
+
+### 5.4 注意
+
+* **没有 TF 卡时拍照/录像都不会成功**：`0x0B` 回 1/4，面板显示「⚠ 未插 TF 卡」，
+  图片列表为空。
+* 中转的 HTTP 代理**只做只读透传**（GET/HEAD），不会删除或修改相机文件。
+* 代理响应**始终断开连接**（`Connection: close`）：相机有时用 chunked 编码，
+  若保持 keep-alive，客户端会一直等响应体直到超时（Qt 报 "Operation canceled"）。
+
+---
+
+## 6. 地面站侧实现
 
 ### 4.1 C++：`src/GimbalLink.{h,cpp}`
 
@@ -270,7 +330,7 @@ gimbalLink.refreshStatus() / refreshAttitude() / softReboot()
 
 ---
 
-## 5. 面板功能对照
+## 7. 面板功能对照
 
 | 控件 | 行为 |
 | --- | --- |
@@ -288,7 +348,7 @@ gimbalLink.refreshStatus() / refreshAttitude() / softReboot()
 
 ---
 
-## 6. 故障排查
+## 8. 故障排查
 
 | 现象 | 可能原因 | 确认方法 | 处置 |
 | --- | --- | --- | --- |
@@ -305,7 +365,7 @@ gimbalLink.refreshStatus() / refreshAttitude() / softReboot()
 
 ---
 
-## 7. 常用命令速查
+## 9. 常用命令速查
 
 ```bash
 # ── 机载电脑 ────────────────────────────────────────────────
