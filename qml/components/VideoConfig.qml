@@ -26,35 +26,28 @@ Item {
     //     → 地面站经 Wi-Fi 拉流 rtsp://192.168.2.113:8554/a8mini
     //   MediaMTX 只开 TCP，且该流实际编码是 H.265（配置里注明 "named main.264
     //   but carries H.265"）。中转按需拉流（sourceOnDemand），不影响相机。
-    readonly property var presetNames: [
-        "Jetson 中转 · a8mini（实测可用）",
-        "相机直连 · main.264",
-        "吊舱主码流 · video1",
-        "吊舱副码流 · video2",
-        "自定义地址"
-    ]
-    readonly property var presetUrls: [
-        "rtsp://192.168.2.113:8554/a8mini",
-        "rtsp://192.168.144.25:8554/main.264",
-        "rtsp://192.168.144.25:8554/video1",
-        "rtsp://192.168.144.25:8554/video2",
-        ""
-    ]
-
     readonly property var codecNames: ["自动识别", "H.264", "H.265"]
     readonly property var transportNames: ["TCP（推荐）", "UDP"]
 
-    /* ── 从视频流地址推导出的机载服务地址 ─────────────────────────
+    /* ── 只配一处：机载电脑地址 ──────────────────────────────────
      *
-     * 云台控制中转与照片文件代理都跑在【同一台机载电脑】上（就是视频中转
-     * MediaMTX 所在的那台），所以它们的地址统一从视频流地址里取主机名，
-     * 端口固定：
-     *     云台控制   主机:37260（UDP）
-     *     照片/文件  主机:37261（HTTP）
+     * 图传、云台控制、照片/视频取回都在【同一台机载电脑】上，所以界面上
+     * 只需要填这一个地址（主机名或 IP），其余全部推导：
+     *     图传  rtsp://<host>:8554/a8mini
+     *     云台  <host>:37260（UDP）
+     *     照片  <host>:37261（HTTP）
      *
-     * 这样只需要配一处地址，不会出现"视频连的是这台、云台连的是那台"的
-     * 不一致；换机器时只改视频流地址即可。
+     * 这样不会出现"视频连的是这台、云台连的是那台"的不一致；
+     * 换机器只改这一个地址。特殊场景（例如地面站直接接在相机网段）
+     * 也可以填完整的 rtsp:// 地址，此时原样使用。
      */
+    property string host: "192.168.2.113"
+    readonly property int rtspPort: 8554
+    readonly property string streamPath: "a8mini"    // MediaMTX 上的路径名
+    readonly property string url: host.indexOf("rtsp://") === 0
+                                   ? host
+                                   : "rtsp://" + host + ":" + rtspPort + "/" + streamPath
+
     readonly property string relayHost: {
         var match = /^rtsp:\/\/(?:[^@\/]*@)?([^:\/]+)/.exec(url)
         return match ? match[1] : "192.168.2.113"
@@ -63,10 +56,12 @@ Item {
     readonly property int photoPort: 37261
     readonly property string gimbalEndpoint: relayHost + ":" + gimbalPort
     readonly property string photoEndpoint: relayHost + ":" + photoPort
+    // 派生地址一览（设置页显示用；短形式，主机名已在上面的输入框里）
+    readonly property string derivedSummary: "图传 :" + rtspPort + "/" + streamPath
+                                             + "　云台 :" + gimbalPort
+                                             + "　照片 :" + photoPort
 
     // ── 持久化字段 ──────────────────────────────────────────────
-    property int presetIndex: 0
-    property string customUrl: "rtsp://192.168.2.113:8554/a8mini"
     // MediaMTX 只读账号（read 权限仅限 a8mini 路径、仅限本地网段）
     // 口令不写进源码：首次使用时在「系统设置 → 认证账号」里填写，
     // 或写入本机配置 ~/.config/<应用>/VideoStream.conf。
@@ -78,12 +73,6 @@ Item {
     property bool enabled: true       // 关闭后不建立任何连接
     property bool livePanelVisible: true
 
-    readonly property string url: {
-        var i = presetIndex
-        if (i >= 0 && i < presetUrls.length && presetUrls[i].length > 0)
-            return presetUrls[i]
-        return customUrl
-    }
     readonly property string codec: codecIndex === 1 ? "h264" : codecIndex === 2 ? "h265" : "auto"
     readonly property string transport: transportIndex === 1 ? "udp" : "tcp"
     readonly property bool valid: url.length > 6 && url.indexOf("rtsp://") === 0
@@ -102,8 +91,7 @@ Item {
 
     Settings {
         category: "VideoStream"
-        property alias presetIndex: cfg.presetIndex
-        property alias customUrl: cfg.customUrl
+        property alias host: cfg.host
         property alias userId: cfg.userId
         property alias userPw: cfg.userPw
         property alias codecIndex: cfg.codecIndex
@@ -142,7 +130,7 @@ Item {
     function plainUrl() { return url }
 
     function summary() {
-        return presetNames[presetIndex] + " · " + transport.toUpperCase()
+        return relayHost + " · " + transport.toUpperCase()
              + " · " + codecNames[codecIndex] + " · " + latency + "ms"
     }
 }

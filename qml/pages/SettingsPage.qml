@@ -228,15 +228,16 @@ Item {
                     width: Math.round((parent.width - parent.spacing) * 0.535); height: parent.height; title: "网络与通信"
                     Column {
                         x: 14; y: 6; width: parent.width - 28; spacing: 2
-                        // ── 视频流（真实 RTSP 拉流，绑定 VideoConfig 单例）──
+                        // ── 机载电脑：图传 / 云台 / 照片 都在这台机器上 ──
+                        // 只需填这一个地址，其余端口与路径自动推导（见下行）
                         Row {
                             width: parent.width; height: 31
-                            FormLabel { width: 114; text: "视频流地址" }
-                            ChoiceField {
+                            FormLabel { width: 114; text: "机载电脑" }
+                            ValueField {
                                 width: 236
-                                model: VideoConfig.presetNames
-                                currentIndex: VideoConfig.presetIndex
-                                onActivated: VideoConfig.presetIndex = index
+                                text: VideoConfig.host
+                                placeholderText: "IP 或主机名"
+                                onTextEdited: VideoConfig.host = text.trim()
                             }
                             Item { width: 8; height: 1 }
                             GButton {
@@ -246,16 +247,14 @@ Item {
                                 onClicked: VideoConfig.enabled = !VideoConfig.enabled
                             }
                         }
-                        // 「自定义地址」只在使用自定义预设时才需要显示，
-                        // 平时隐藏以腾出纵向空间（卡片内容区已接近上限）
+                        // 由上面一个地址推导出的全部服务地址（只读）
                         Row {
-                            width: parent.width; height: visible ? 31 : 0
-                            visible: VideoConfig.presetIndex === VideoConfig.presetNames.length - 1
-                            FormLabel { width: 114; text: "自定义地址" }
-                            ValueField {
+                            width: parent.width; height: 30
+                            FormLabel { width: 114; text: "派生地址" }
+                            FormLabel {
                                 width: parent.width - 114
-                                text: VideoConfig.customUrl
-                                onTextEdited: { VideoConfig.customUrl = text; VideoConfig.presetIndex = 3 }
+                                text: VideoConfig.derivedSummary
+                                color: "#8fa6ba"; font.pixelSize: 11
                             }
                         }
                         Row {
@@ -317,8 +316,7 @@ Item {
                                 onClicked: VideoConfig.reconnectRequest += 1
                             }
                         }
-                        // 机载遥测与云台/照片地址合并展示（原「机载协议」与
-                        // 「网关端口」分两行，超出了卡片可用高度）
+                        // 机载遥测（ROS 网关，只读）
                         Row {
                             width: parent.width; height: 33
                             FormLabel { width: 114; text: "机载遥测" }
@@ -326,17 +324,6 @@ Item {
                             ValueField { width: 92; text: page.values.dronePort; onTextEdited: page.setValue("dronePort", text) }
                             Item { width: 6; height: 1 }
                             GButton { width: 96; height: 33; text: "测试连接"; fill: "#087dff"; onClicked: { groundLink.connectToGateway(String(page.values.droneIp), Number(page.values.dronePort)); page.notify(groundLink.status) } }
-                        }
-                        // 云台与照片库的地址不在本页配置：它们与视频中转同机，
-                        // 主机名从上面的「视频流地址」自动推导，端口固定。
-                        Row {
-                            width: parent.width; height: 30
-                            FormLabel { width: 114; text: "云台 / 照片" }
-                            FormLabel {
-                                width: parent.width - 114
-                                text: VideoConfig.gimbalEndpoint + " · " + VideoConfig.photoEndpoint + "（随视频地址自动推导）"
-                                color: "#8fa6ba"; font.pixelSize: 11
-                            }
                         }
                     }
                 }
