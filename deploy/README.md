@@ -59,7 +59,17 @@ journalctl -u siyi-gimbal-relay -n 20 --no-pager
 
 ## 2. 视频中转（MediaMTX）
 
-MediaMTX 从相机拉 RTSP 并对外提供只读转发，配置在 `/etc/mediamtx/mediamtx.yml`：
+MediaMTX 从相机拉 RTSP 并对外提供只读转发，配置在 `/etc/mediamtx/mediamtx.yml`。
+
+> ⚠️ **服务名是 `mediamtx-a8mini`，不是 `mediamtx`**。
+> 用错名字会显示 `inactive`，但视频其实是通的（排查时容易误判）。
+
+```bash
+systemctl status mediamtx-a8mini
+journalctl -u mediamtx-a8mini -n 30 --no-pager
+sudo systemctl restart mediamtx-a8mini
+ss -tlnp | grep 8554        # 应看到 mediamtx 监听 0.0.0.0:8554
+```
 
 ```yaml
 paths:
