@@ -367,6 +367,8 @@ gimbalLink.refreshStatus() / refreshAttitude() / softReboot()
 
 ## 9. 常用命令速查
 
+诊断脚本都在仓库 [`tools/`](tools/README.md)（注明各自该在哪台机器上跑）：
+
 ```bash
 # ── 机载电脑 ────────────────────────────────────────────────
 systemctl status siyi-gimbal-relay
@@ -374,10 +376,18 @@ journalctl -u siyi-gimbal-relay -n 30 --no-pager
 sudo systemctl restart siyi-gimbal-relay
 
 # ── 地面站机器：协议探测（只读）──────────────────────────────
-python3 siyi_probe.py 192.168.2.113       # 查状态/姿态/模式/变倍
-python3 verify_gimbal_commands.py         # 逐条验证拍照/录像/变倍/模式
+python3 tools/siyi_probe.py               # 查状态/姿态/模式/变倍（经中转）
+python3 tools/verify_gimbal_commands.py   # 逐条验证拍照/录像/变倍/模式
                                           #（可逆操作会自动复原）
+python3 tools/test_rotate_cmd.py          # 方向排查（看画面，别只看角度）
+python3 tools/recover_stuck_rotate.py     # 云台停不下来时用
+
+# ── 机载电脑：需要直连相机的检查 ─────────────────────────────
+bash   tools/recover_soft_reboot.sh       # 命令服务挂死时恢复（0x80）
+python3 tools/check_tfcard.py             # 确认 TF 卡在位
+python3 tools/check_photo_flow.py         # 拍照→列表→下载 全链路
 
 # ── 地面站应用 ──────────────────────────────────────────────
 ./build/agri_gcs_visual --gimbal-test     # 控制回路自检
+./build/agri_gcs_visual --start-tab 2     # 直接打开「图片列表」页
 ```
