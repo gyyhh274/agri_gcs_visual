@@ -350,8 +350,14 @@ gimbalLink.refreshStatus() / refreshAttitude() / softReboot()
 
 ## 8. 故障排查
 
+> **先看这一条（实战中最常遇到）**：
+> **图传 / 云台 / 照片同时全不通** → 九成是**机载电脑的 IP 变了**。
+> 无人机机载电脑一般用 DHCP，换网络或重启路由器后地址会变。
+> 确认与处置见下表第一行。
+
 | 现象 | 可能原因 | 确认方法 | 处置 |
 | --- | --- | --- | --- |
+| **图传+云台+照片全不通**（视频报 `Could not open resource for reading`） | **机载电脑 IP 变了**（DHCP 重新分配；旧 IP 可能已被别的设备占用） | 在局域网扫 8554/37260 端口找出真正地址（见下） | 「系统设置 → 连接设置 → 机载电脑」改成新 IP，点「拉流」 |
 | 拨杆推着不动 | 相机在限位（yaw ±135 / pitch −90~25） | 看面板角度是否已到边界 | 属正常限位；往反方向推 |
 | 拨杆左右方向反了 | 被"回报角度"误导而加了取反 | 看**画面**移动方向，别只看角度 | 去掉 `flushRotate()` 里的取反（见 §4.2） |
 | 松手后云台还在转 | 停止包丢失 / 地面站异常退出 | 中转日志有无「死手保护触发」 | 1 秒内会自动停；再点「回中」复位 |
@@ -362,6 +368,41 @@ gimbalLink.refreshStatus() / refreshAttitude() / softReboot()
 | 云台不动但显示在线 | 姿态被限位钳制 | 看当前 yaw/pitch 是否已到 ±135 / −90~25 | 属正常限位 |
 | 变倍值与设定值不一致 | 相机自身的变倍曲线/档位 | 回查 `0x18` | 以相机回报为准 |
 | 中转日志刷 `已丢弃心跳帧` | 有别的工具在发 0x00 | `journalctl -u siyi-gimbal-relay` | 找出那个工具并停止 |
+
+### 8.1 怎么找出机载电脑的新 IP
+
+机载电脑上跑着三个特征端口，扫出来即可确认：
+
+| 端口 | 协议 | 服务 |
+| --- | --- | --- |
+| 8554 | TCP | MediaMTX 图传中转 |
+| 37260 | UDP | 云台指令中转（TCP 扫不到） |
+| 37261 | TCP | 照片/视频文件代理 |
+
+```bash
+# 在 Windows PowerShell 上扫（注意：ICMP 可能被屏蔽，用 TCP 端口判断更可靠）
+1..254 | ForEach-Object {
+  $ip = "192.168.2.$_"
+  $c = New-Object Net.Sockets.TcpClient
+  try {
+    if ($c.BeginConnect($ip,8554,$null,$null).AsyncWaitHandle.WaitOne(300,$false) -and $c.Connected) { "命中 $ip" }
+  } catch {} finally { $c.Close() }
+}
+```
+
+```bash
+# 或从地面站机器上（有 python3 即可）
+for i in $(seq 1 254); do
+  timeout 1 bash -c "cat < /dev/null > /dev/tcp/192.168.2.$i/8554" 2>/dev/null && echo "命中 192.168.2.$i"
+done
+```
+
+> **判据不要只看 ping**：实测机载电脑可能不回 ICMP（ping 全超时）但 TCP 服务完全正常。
+> **也不要只看 SSH**：22 端口开放不代表是机载电脑 —— 我们踩过一次
+> `192.168.2.113` 的 22 端口开着、SSH 主机密钥却变了，其实是**别的设备抢了旧 IP**。
+> 认准 **8554 + 37261** 这两个端口最可靠。
+
+> 想彻底避免：给机载电脑配**静态 IP**，或在路由器上做 **DHCP 保留**（按 MAC 绑定）。
 
 ---
 
