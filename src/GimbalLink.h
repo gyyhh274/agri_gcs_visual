@@ -146,6 +146,10 @@ private:
     static constexpr int kAckTimeoutMs = 900;
     static constexpr int kMaxAttempts = 3;
     static constexpr qint64 kAttitudeStaleMs = 3000;
+    /* 链路判活的静默阈值：超过这么久没收到【任何】回复才算断连。
+     * 不要按"某条命令失败"判连 —— 相机会漏答个别命令（尤其 0x19），
+     * 那样界面会反复闪"云台离线"（用户反馈的"一直在断连"）。 */
+    static constexpr qint64 kLinkIdleMs = 4000;
     static constexpr int kRotateFlushMs = 45;    // 拨杆指令合并到约 22 Hz
     static constexpr qint64 kRotateDeadmanMs = 500; // 超过这个时间没有新杆量就自动停止
 
@@ -187,6 +191,8 @@ private:
     bool m_connected{false};
     bool m_attitudeFresh{false};
     bool m_tfCardPresent{true};
+    qint64 m_lastReplyMs{0};        // 最后一次收到任何回复的时刻（判活用）
+    int m_missedCommands{0};        // 重试耗尽的命令数（仅诊断）
     QString m_lastFeedback;
     QString m_status{QStringLiteral("未连接云台")};
     QString m_endpoint;

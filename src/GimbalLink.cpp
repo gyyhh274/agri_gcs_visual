@@ -279,7 +279,12 @@ void GimbalLink::onReadyRead()
             continue;
 
         m_pending.remove(command);
-        m_connected = true;
+        // 记录"最后一次收到回复的时间"：链路存活只按这个判据（见 onMaintenance）
+        m_lastReplyMs = nowMs();
+        if (!m_connected) {
+            m_connected = true;
+            setStatus(QStringLiteral("云台在线 %1").arg(m_endpoint));
+        }
         decodePayload(command, payload);
         emit changed();
     }
@@ -405,16 +410,20 @@ void GimbalLink::onPoll()
 {
     if (m_endpoint.isEmpty())
         return;
-    // 姿态是最需要刷新的量；其余状态低频查询即可
+    // 姿态是最需要刷新的量（1 Hz）；其余状态低频轮询。
+    // 轮询总量控制在 2 条/秒左右：相机对密集查询容易漏答，
+    // 少发一点反而更稳（实测 5 条/秒时 0x19 经常不回）。
     sendCommand(kCmdGetAttitude, QByteArray());
     static int tick = 0;
-    if (++tick % 3 == 0)
-        sendCommand(kCmdSystemInfo, QByteArray());
+    ++tick;
+    if (tick % 2 == 0)
+        sendCommand(kCmdSystemInfo, QByteArray());          // 录像/TF 卡状态，0.5 Hz
     if (tick % 5 == 0) {
-        sendCommand(kCmdGimbalMode, QByteArray());
+        sendCommand(kCmdGimbalMode, QByteArray());          // 0.2 Hz
         sendCommand(kCmdCurrentZoom, QByteArray());
-        sendCommand(kCmdMaxZoom, QByteArray());
     }
+    if (tick % 10 == 0)
+        sendCommand(kCmdMaxZoom, QByteArray());             // 0.1 Hz（几乎不变）
 }
 
 void GimbalLink::retryPending()
@@ -427,11 +436,13 @@ void GimbalLink::retryPending()
             continue;
         }
         if (pending.attempts >= kMaxAttempts) {
-            m_connected = false;
-            m_attitudeFresh = false;
+            // ⚠️ 不要在这里把链路判成断连。
+            // 实测相机对【个别命令】会不回（尤其 0x19 模式查询），
+            // 而轮询每秒都在发，若"一条命令失败 = 整条链路离线"，
+            // 界面就会反复显示"云台离线"（用户反馈的"一直在断连"）。
+            // 链路存活只按【时间】判定：见 onMaintenance() 里的 kLinkIdleMs。
+            m_missedCommands += 1;
             it = m_pending.erase(it);
-            setStatus(QStringLiteral("云台无应答（%1）").arg(m_endpoint));
-            emit attitudeChanged();
             continue;
         }
         pending.attempts += 1;
@@ -501,6 +512,23 @@ void GimbalLink::onMaintenance()
     // 死手保护：拨杆停止上报杆量后自动归零，避免界面卡死/断连时云台持续转动
     if (!m_rotateIdle && nowMs() - m_lastRotateInputMs > kRotateDeadmanMs) {
         stopRotate();
+    }
+
+    // ── 链路存活判定：只看【时间】，不看单条命令的成败 ──────────────
+    // 相机对个别命令会漏答（实测 0x19 经常不回），若按"某条命令失败"
+    // 判定断连，界面会反复闪"云台离线"。改为：一段时间内一条回复都没有
+    // 才算断连；恢复任意一条回复即重新在线。
+    const qint64 idleMs = nowMs() - m_lastReplyMs;
+    if (m_connected && m_lastReplyMs > 0 && idleMs > kLinkIdleMs) {
+        m_connected = false;
+        m_attitudeFresh = false;
+        setStatus(QStringLiteral("云台无应答（%1 秒没有收到任何回复）")
+                      .arg(idleMs / 1000));
+        emit attitudeChanged();
+    }
+    if (m_missedCommands > 0) {
+        // 只作为诊断信息，不改变在线状态
+        m_missedCommands = 0;
     }
 
     if (m_attitudeFresh && nowMs() - m_attitudeAtMs > kAttitudeStaleMs) {
