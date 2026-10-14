@@ -64,6 +64,12 @@ Item {
         function onNotified(text) { page.actionMessage(text) }
     }
 
+    // 机载电脑地址变化时（例如「自动发现」扫到了新地址）重连云台与照片库
+    Connections {
+        target: VideoConfig
+        function onHostChanged() { page.connectGimbal() }
+    }
+
     function routeJson() {
         var rows = []
         for (var i=0; i<waypoints.count; i++) rows.push(waypoints.get(i))

@@ -17,6 +17,7 @@ add_executable(agri_gcs_visual MACOSX_BUNDLE
     src/GroundLink.cpp src/GroundLink.h
     src/GimbalLink.cpp src/GimbalLink.h
     src/PhotoLibrary.cpp src/PhotoLibrary.h
+    src/RelayDiscovery.cpp src/RelayDiscovery.h
     qml.qrc
 )
 

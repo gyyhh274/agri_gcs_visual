@@ -21,6 +21,7 @@
 #include "GroundLink.h"
 #include "GimbalLink.h"
 #include "PhotoLibrary.h"
+#include "RelayDiscovery.h"
 
 namespace {
 void reportError(const QString &message)
@@ -154,6 +155,7 @@ int main(int argc, char *argv[])
     GroundLink groundLink;
     GimbalLink gimbalLink;
     PhotoLibrary photoLibrary;
+    RelayDiscovery relayDiscovery;
     QSettings settings;
     QString tileDirectory = parser.isSet(QStringLiteral("tiles")) ? parser.value(QStringLiteral("tiles"))
         : qEnvironmentVariable("AGRI_GCS_TILE_DIR", settings.value("OfflineMap/directory").toString());
@@ -181,6 +183,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("groundLink", &groundLink);
     engine.rootContext()->setContextProperty("gimbalLink", &gimbalLink);
     engine.rootContext()->setContextProperty("photoLibrary", &photoLibrary);
+    engine.rootContext()->setContextProperty("relayDiscovery", &relayDiscovery);
     engine.rootContext()->setContextProperty(
         "initialTab", parser.value(QStringLiteral("start-tab")).toInt());
     engine.rootContext()->setContextProperty(

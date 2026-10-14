@@ -2,6 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Window 2.15
 import "pages"
+import "components"
 
 ApplicationWindow {
     id: window
@@ -28,6 +29,30 @@ ApplicationWindow {
     property bool previewMode: false
     property bool overviewSettings: false
     property real designScale: Math.min(width / 1536, height / 1024)
+
+    // 自动发现到机载电脑后直接采用该地址：
+    // 视频（pipelineRevision 变化）与云台/照片（relayHost 派生）都会跟着切
+    Connections {
+        target: relayDiscovery
+        function onFound(host) {
+            console.log("[Main] 自动发现机载电脑:", host)
+            VideoConfig.host = host
+        }
+    }
+
+    // 连不上时自动扫一次网段（每个会话只自动扫一次，避免反复扫网段）
+    property bool autoScanned: false
+    Connections {
+        target: VideoConfig
+        function onRuntimePhaseChanged() {
+            if (autoScanned || relayDiscovery.scanning) return
+            if (VideoConfig.runtimePhase === "retry" || VideoConfig.runtimePhase === "error") {
+                autoScanned = true
+                console.log("[Main] 视频连不上，自动扫描机载电脑…")
+                relayDiscovery.scan(VideoConfig.host)
+            }
+        }
+    }
 
     Item {
         id: stage

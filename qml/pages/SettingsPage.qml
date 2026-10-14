@@ -229,17 +229,25 @@ Item {
                     Column {
                         x: 14; y: 6; width: parent.width - 28; spacing: 2
                         // ── 机载电脑：图传 / 云台 / 照片 都在这台机器上 ──
-                        // 只需填这一个地址，其余端口与路径自动推导（见下行）
+                        // 只需填这一个地址，其余端口与路径自动推导（见下行）。
+                        // 地址会随 DHCP 变化 → 用「自动发现」扫出来
                         Row {
                             width: parent.width; height: 31
                             FormLabel { width: 114; text: "机载电脑" }
                             ValueField {
-                                width: 236
+                                width: 178
                                 text: VideoConfig.host
                                 placeholderText: "IP 或主机名"
                                 onTextEdited: VideoConfig.host = text.trim()
                             }
-                            Item { width: 8; height: 1 }
+                            Item { width: 6; height: 1 }
+                            GButton {
+                                width: 88; height: 31
+                                text: relayDiscovery.scanning ? "扫描中…" : "自动发现"
+                                fill: relayDiscovery.scanning ? "#2a5d80" : "#0a6b4a"
+                                onClicked: relayDiscovery.scan(VideoConfig.host)
+                            }
+                            Item { width: 6; height: 1 }
                             GButton {
                                 width: 64; height: 31
                                 text: VideoConfig.enabled ? "停止" : "拉流"
@@ -255,6 +263,17 @@ Item {
                                 width: parent.width - 114
                                 text: VideoConfig.derivedSummary
                                 color: "#8fa6ba"; font.pixelSize: 11
+                            }
+                        }
+                        // 自动发现的进度 / 结果
+                        Row {
+                            width: parent.width; height: 20
+                            Item { width: 114; height: 1 }
+                            FormLabel {
+                                width: parent.width - 114
+                                text: relayDiscovery.status
+                                color: relayDiscovery.foundHost.length > 0 ? "#00e787" : "#6d8496"
+                                font.pixelSize: 10
                             }
                         }
                         Row {
