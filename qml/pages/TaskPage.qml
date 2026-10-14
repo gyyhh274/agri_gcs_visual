@@ -1,6 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import Qt.labs.settings 1.1
+import QtMultimedia 5.15
 import "../components"
 
 Item {
@@ -33,8 +34,13 @@ Item {
 
     function connectGimbal() {
         gimbalLink.connectToGimbal(gimbalHost, gimbalPort)
-        // 照片库走同一台机载电脑上的 HTTP 代理（中转服务的 37261 端口）
+        // 照片库 / 录像库走同一台机载电脑上的 HTTP 代理（中转服务的 37261 端口）
         photoLibrary.setEndpoint(gimbalHost, VideoConfig.photoPort)
+        videoLibrary.setEndpoint(gimbalHost, VideoConfig.photoPort)
+        // 若当前正停在「视频列表」页，补一次刷新：
+        // onContentTabChanged 可能早于本函数执行，那时还没地址，刷新会直接返回。
+        if (contentTab === 3)
+            Qt.callLater(function() { videoLibrary.refresh() })
         actionMessage("云台链路：" + gimbalHost + ":" + gimbalPort)
     }
 
@@ -49,7 +55,20 @@ Item {
         function onPhotoFailed(reason) {
             photoResyncTimer.stop()
         }
+        // 录像状态变化：1=录像中，0=停止。停止后相机需要时间写文件，
+        // 稍等再刷新录像列表，新录的文件就会自动出现在「视频列表」里。
+        function onRecordStatusChanged() {
+            if (gimbalLink.recordStatus === 0 && wasRecording) {
+                wasRecording = false
+                videoResyncTimer.restart()
+            } else if (gimbalLink.recordStatus === 1) {
+                wasRecording = true
+            }
+        }
     }
+
+    // 是否刚在录像（用于识别"停止录像"这个边沿，避免重复刷新）
+    property bool wasRecording: false
 
     Timer {
         // 相机写完文件需要一点时间（实测约 1~2 秒），稍等再同步
@@ -59,8 +78,23 @@ Item {
         onTriggered: photoLibrary.fetchNewest()
     }
 
+    Timer {
+        // 录像文件比照片大，多等一点再刷新列表
+        id: videoResyncTimer
+        interval: 2500
+        repeat: false
+        onTriggered: {
+            videoLibrary.refresh()
+            page.actionMessage("录像已结束，正在刷新视频列表…")
+        }
+    }
+
     Connections {
         target: photoLibrary
+        function onNotified(text) { page.actionMessage(text) }
+    }
+    Connections {
+        target: videoLibrary
         function onNotified(text) { page.actionMessage(text) }
     }
 
@@ -70,8 +104,40 @@ Item {
         function onHostChanged() { page.connectGimbal() }
     }
 
-    function routeJson() {
-        var rows = []
+    // 切到「视频列表」时按需刷新录像列表（录像列表不在启动时拉，省流量）
+    onContentTabChanged: {
+        if (contentTab === 3 && !videoLibrary.busy
+                && videoLibrary.endpoint.length > 0)
+            Qt.callLater(function() { videoLibrary.refresh() })
+    }
+
+    // 录像列表：取当前选中项
+    // ⚠️ QML 陷阱：`property var x: someFunction()` 这种绑定**不建立依赖**，
+    //    只在创建时求值一次（那时列表还是空的）→ 永远拿到 null。
+    //    所以这里改成"显式刷新到页面属性"的方式，由数据和选中变化驱动。
+    property var videoSelection: null
+
+    function refreshVideoSelection() {
+        var list = videoLibrary.photos
+        if (!list || selectedVideo < 0 || selectedVideo >= list.length) {
+            videoSelection = null
+            return
+        }
+        videoSelection = list[selectedVideo]
+    }
+    onSelectedVideoChanged: refreshVideoSelection()
+
+    Connections {
+        target: videoLibrary
+        function onPhotosChanged() { page.refreshVideoSelection() }
+    }
+
+    function selectedVideoEntry() {
+        refreshVideoSelection()
+        return videoSelection
+    }
+
+    function routeJson() {        var rows = []
         for (var i=0; i<waypoints.count; i++) rows.push(waypoints.get(i))
         return JSON.stringify(rows, null, 2)
     }
@@ -718,29 +784,176 @@ Item {
     Component {
         id: videoView
         Item {
+            // ⚠️ 注意：外层 Component 的 id 是 videoView，它指的是【Component 本身】，
+            //    组件内部不能用 videoView.xxx 访问本 Item 的属性（会得到 undefined）。
+            //    所以这里统一用 page.videoSelection，不要再引入中间属性。
+            id: videoRoot
+
+            // ── 工具栏 ──
             Row { x: 9; y: 8; spacing: 10
-                GField { width: 180; height: 34; text: "2024-12-26" }
-                GField { width: 110; height: 34; text: "全部航段" }
-                GField { width: 336; height: 34; placeholder: "搜索视频名称" }
-                GButton { width: 100; height: 34; text: "批量下载"; onClicked: page.actionMessage("当前为视频封面示例，未连接媒体存储") }
-            }
-            Row { x: 9; y: 52; spacing: 10
-                ListView { width: 420; height: parent.parent.height - 62; model: 5; clip: true
-                    delegate: Rectangle { width: 420; height: 65; color: index === page.selectedVideo ? "#0a396d" : "#071927"; border.color: index === page.selectedVideo ? "#087dff" : "#15344b"; radius: 3
-                        MediaThumb { x: 31; y: 5; width: 95; height: 55; photoIndex:index*2 }
-                        Rectangle { x: 7; y: 25; width: 13; height: 13; color: index === page.selectedVideo ? "#087dff" : "transparent"; border.color: "#bcd0e2" }
-                        Text { x: 136; y: 8; text: "DJI_20241226_15" + (2201 + index * 234) + ".mp4"; color: "#e7f1fb"; font.pixelSize: 12 }
-                        Text { x: 136; y: 29; text: "15:22:01 - 15:24:35     航段" + (index + 1); color: "#9db1c5"; font.pixelSize: 11 }
-                        Text { x: 136; y: 47; text: (3.2 - index * .15).toFixed(1) + " GB"; color: "#9db1c5"; font.pixelSize: 11 }
-                        MouseArea {anchors.fill:parent; onClicked:page.selectedVideo=index}
+                GButton {
+                    width: 112; height: 34
+                    text: videoLibrary.busy ? "同步中…" : "刷新列表"
+                    onClicked: videoLibrary.refresh()
+                }
+                GButton {
+                    width: 112; height: 34; text: "下载选中"
+                    onClicked: {
+                        var entry = page.selectedVideoEntry()
+                        if (entry) {
+                            videoLibrary.download(entry.name)
+                        } else {
+                            page.actionMessage("请先在左侧点选一个录像（列表里有 "
+                                               + videoLibrary.photos.length + " 个，当前选中序号 "
+                                               + page.selectedVideo + "）")
+                        }
                     }
                 }
-                Rectangle { width: 350; height: 350; color: "#06131e"; border.color: "#1b415c"; radius: 4
-                    Text { x:10; y:8; text:"DJI_20241226_15"+(2201+page.selectedVideo*234)+".mp4"; color:"#dce9f7"; font.pixelSize:12 }
-                    VideoPanel { x: 8; y: 29; width: 334; height: 184; clean: true }
-                    Text { x: 10; y: 222; text: "▶    00:00:45 / 00:02:34                         ⛶"; color: "white"; font.pixelSize: 12; MouseArea {anchors.fill:parent; onClicked:page.actionMessage("演示封面，尚未加载可播放的视频文件")} }
-                    Row { x:10; y:247; spacing:5; Repeater {model:5; delegate:MediaThumb {width:61; height:38; photoIndex:index+page.selectedVideo} } }
-                    Text { x: 10; y: 295; text: "拍摄时间    2024-12-26 15:22:01\n航段        航段"+(page.selectedVideo+1)+"    文件大小    "+(3.2-page.selectedVideo*.15).toFixed(1)+" GB\n分辨率      3840 × 2160   30 fps"; color: "#cbdbea"; font.pixelSize: 11; lineHeight: 1.35 }
+                GButton {
+                    width: 112; height: 34; text: "删除本地"
+                    onClicked: {
+                        var entry = page.selectedVideoEntry()
+                        if (!entry) { page.actionMessage("请先在左侧点选一个录像"); return }
+                        if (videoLibrary.removeLocal(entry.name))
+                            page.actionMessage("已删除本地缓存（相机上的文件保留）")
+                        else
+                            page.actionMessage("该录像还没有本地缓存")
+                    }
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: "#8fa6ba"; font.pixelSize: 12
+                    text: videoLibrary.status
+                }
+            }
+
+            // ── 下载进度（仅下载中显示）──
+            Row {
+                x: 9; y: 48; spacing: 10
+                visible: videoLibrary.downloadingName.length > 0
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: "#dce9f7"; font.pixelSize: 12; width: 210
+                    elide: Text.ElideMiddle
+                    text: "下载中 " + videoLibrary.downloadingName
+                }
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 280; height: 10; radius: 5; color: "#0a1c2b"; border.color: "#1d3b52"
+                    Rectangle {
+                        width: parent.width * Math.max(0, Math.min(1, videoLibrary.downloadProgress / 100))
+                        height: parent.height; radius: 5; color: "#087dff"
+                    }
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: "#9db1c5"; font.pixelSize: 12
+                    text: videoLibrary.downloadingSizeText + "  "
+                          + videoLibrary.downloadProgress.toFixed(0) + "%"
+                }
+            }
+
+            // ── 左：录像列表（真实数据，双击即下载）──
+            ListView {
+                id: videoList
+                x: 9; y: 72; width: 430
+                height: Math.max(0, parent.height - 82)
+                clip: true
+                model: videoLibrary.photos
+                spacing: 2
+                delegate: Rectangle {
+                    property var entry: modelData
+                    width: videoList.width; height: 60
+                    color: index === page.selectedVideo ? "#0a396d" : "#071927"
+                    border.color: index === page.selectedVideo ? "#087dff" : "#15344b"
+                    radius: 3
+                    Text {
+                        x: 12; y: 8; width: 390; elide: Text.ElideMiddle
+                        text: entry.name; color: "#e7f1fb"; font.pixelSize: 13
+                    }
+                    Text {
+                        x: 12; y: 31
+                        text: entry.ready
+                              ? ((entry.sizeKB >= 1024
+                                  ? (entry.sizeKB / 1024).toFixed(1) + " MB"
+                                  : entry.sizeKB + " KB") + "   已缓存到本机")
+                              : "未下载（双击下载，或在右侧点「下载选中」）"
+                        color: entry.ready ? "#00db80" : "#9db1c5"
+                        font.pixelSize: 11
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: page.selectedVideo = index
+                        onDoubleClicked: videoLibrary.download(entry.name)
+                    }
+                }
+            }
+            Text {
+                x: 14; y: 82; width: 400; wrapMode: Text.WordWrap
+                visible: videoLibrary.photos.length === 0
+                color: "#5b7488"; font.pixelSize: 12
+                text: videoLibrary.busy ? "正在读取相机录像列表…"
+                                        : "相机 TF 卡里还没有录像。\n点右侧「录像」按钮开始录制，停止后会自动刷新到这里。"
+            }
+
+            // ── 右：选中录像的播放区 ──
+            Rectangle {
+                x: 449; y: 72; width: Math.max(0, parent.width - 458)
+                height: Math.max(0, parent.height - 82)
+                color: "#06131e"; border.color: "#1b415c"; radius: 4
+
+                Text {
+                    x: 10; y: 8; width: parent.width - 20; elide: Text.ElideMiddle
+                    text: page.videoSelection ? page.videoSelection.name : "未选择录像"
+                    color: "#dce9f7"; font.pixelSize: 12
+                }
+
+                // 已下载的 mp4 用本地播放器播放（file:// 路径）
+                MediaPlayer {
+                    id: localPlayer
+                    autoPlay: false
+                    source: (page.videoSelection && page.videoSelection.ready)
+                            ? page.videoSelection.localPath : ""
+                }
+                VideoOutput {
+                    id: localOutput
+                    x: 8; y: 30
+                    width: Math.max(0, parent.width - 16)
+                    height: Math.max(0, parent.height - 152)
+                    fillMode: VideoOutput.PreserveAspectFit
+                    source: localPlayer
+                }
+                Text {
+                    x: 12; y: 30
+                    width: Math.max(0, parent.width - 24)
+                    height: Math.max(0, parent.height - 152)
+                    visible: !(page.videoSelection && page.videoSelection.ready)
+                    color: "#5b7488"; font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                    verticalAlignment: Text.AlignVCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    text: page.videoSelection
+                          ? "该录像还在相机 TF 卡里\n点「下载选中」取回本机后即可在此播放"
+                          : "在左侧选择一个录像\n（相机里有 " + videoLibrary.count + " 个）"
+
+                }
+
+                Row {
+                    x: 10; anchors.bottom: parent.bottom; anchors.bottomMargin: 12; spacing: 8
+                    GButton {
+                        width: 76; height: 32; text: "播放"
+                        onClicked: {
+                            var entry = page.selectedVideoEntry()
+                            if (entry && entry.ready) {
+                                localPlayer.play()
+                                page.actionMessage("正在播放 " + entry.name)
+                            } else {
+                                page.actionMessage("需要先下载到本机才能播放")
+                            }
+                        }
+                    }
+                    GButton { width: 76; height: 32; text: "暂停"; onClicked: localPlayer.pause() }
+                    GButton { width: 76; height: 32; text: "停止"; onClicked: localPlayer.stop() }
                 }
             }
         }

@@ -155,6 +155,9 @@ int main(int argc, char *argv[])
     GroundLink groundLink;
     GimbalLink gimbalLink;
     PhotoLibrary photoLibrary;
+    PhotoLibrary videoLibrary;
+    videoLibrary.setMediaType(1);        // 0=照片 101SIYI_IMG / 1=录像 100SIYI_VID
+    videoLibrary.setAutoDownload(false); // 录像文件大，只列列表，下载手动点
     RelayDiscovery relayDiscovery;
     QSettings settings;
     QString tileDirectory = parser.isSet(QStringLiteral("tiles")) ? parser.value(QStringLiteral("tiles"))
@@ -183,6 +186,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("groundLink", &groundLink);
     engine.rootContext()->setContextProperty("gimbalLink", &gimbalLink);
     engine.rootContext()->setContextProperty("photoLibrary", &photoLibrary);
+    engine.rootContext()->setContextProperty("videoLibrary", &videoLibrary);
     engine.rootContext()->setContextProperty("relayDiscovery", &relayDiscovery);
     engine.rootContext()->setContextProperty(
         "initialTab", parser.value(QStringLiteral("start-tab")).toInt());

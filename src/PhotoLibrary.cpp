@@ -113,20 +113,128 @@ void PhotoLibrary::fetchNewest()
     requestList(true);
 }
 
+// ── 媒体类型配置 ───────────────────────────────────────────────
+void PhotoLibrary::setMediaType(int type)
+{
+    const int normalized = (type == 1) ? 1 : 0;
+    if (m_mediaType == normalized)
+        return;
+    m_mediaType = normalized;
+    m_remotePath = (normalized == 1) ? QStringLiteral("100SIYI_VID")
+                                     : QStringLiteral("101SIYI_IMG");
+    m_mediaLabel = (normalized == 1) ? QStringLiteral("录像") : QStringLiteral("照片");
+    // 缓存分目录，避免照片和录像混在一起
+    m_cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (m_cacheDir.isEmpty())
+        m_cacheDir = QDir::homePath() + QStringLiteral("/.cache/agri_gcs_media");
+    m_cacheDir += (normalized == 1) ? QStringLiteral("/videos") : QStringLiteral("/photos");
+    QDir().mkpath(m_cacheDir);
+    // 列表与类型相关，切类型要清掉
+    m_photos.clear();
+    m_queue.clear();
+    // 状态文字要跟着媒体类型走（构造函数的默认文案是"照片库"）
+    m_status = QStringLiteral("%1库未连接").arg(m_mediaLabel);
+    emit photosChanged();
+    emit changed();
+}
+
+void PhotoLibrary::setRemotePath(const QString &path)
+{
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty() || m_remotePath == trimmed)
+        return;
+    m_remotePath = trimmed;
+    emit changed();
+}
+
+void PhotoLibrary::setAutoDownload(bool enabled)
+{
+    if (m_autoDownload == enabled)
+        return;
+    m_autoDownload = enabled;
+    emit changed();
+}
+
+void PhotoLibrary::setDownloadProgress(const QString &name, double progress, const QString &sizeText)
+{
+    m_downloadingName = name;
+    m_downloadProgress = progress;
+    m_downloadingSizeText = sizeText;
+    emit progressChanged();
+}
+
+// 手动下载单个文件（录像文件大，不做自动下载）
+void PhotoLibrary::download(const QString &name)
+{
+    for (const Photo &media : m_photos) {
+        if (media.name != name)
+            continue;
+        if (!media.localPath.isEmpty()) {
+            emit notified(QStringLiteral("%1 已在本地").arg(name));
+            return;
+        }
+        if (!m_queue.contains(name))
+            m_queue.append(name);
+        if (!m_busy)
+            startNextDownload();
+        return;
+    }
+    emit notified(QStringLiteral("列表里没有 %1，先刷新一次").arg(name));
+}
+
+void PhotoLibrary::downloadAllMissing()
+{
+    int missing = 0;
+    for (const Photo &media : m_photos) {
+        if (media.localPath.isEmpty()) {
+            if (!m_queue.contains(media.name))
+                m_queue.append(media.name);
+            ++missing;
+        }
+    }
+    if (missing == 0) {
+        emit notified(QStringLiteral("全部已下载"));
+        return;
+    }
+    emit notified(QStringLiteral("开始下载 %1 个未缓存文件").arg(missing));
+    if (!m_busy)
+        startNextDownload();
+}
+
+bool PhotoLibrary::removeLocal(const QString &name)
+{
+    for (int i = 0; i < m_photos.size(); ++i) {
+        Photo &media = m_photos[i];
+        if (media.name != name)
+            continue;
+        if (media.localPath.isEmpty())
+            return false;
+        QFile::remove(media.localPath);
+        media.localPath.clear();
+        media.sizeBytes = 0;
+        emit photosChanged();
+        setStatus(QStringLiteral("已删除本地缓存 %1（相机文件保留）").arg(name));
+        return true;
+    }
+    return false;
+}
+
 void PhotoLibrary::requestList(bool newestOnly)
 {
     if (m_endpoint.isEmpty()) {
-        setStatus(QStringLiteral("未设置照片库地址"));
-        emit notified(QStringLiteral("照片库未连接：缺少代理地址"));
+        setStatus(QStringLiteral("未设置%1库地址").arg(m_mediaLabel));
+        emit notified(QStringLiteral("%1库未连接：缺少代理地址").arg(m_mediaLabel));
         return;
     }
     m_newestOnly = newestOnly;
     const QString url = QStringLiteral("%1/cgi-bin/media.cgi/api/v1/getmedialist"
-                                       "?media_type=0&path=%2&start=0&count=%3")
-                            .arg(m_endpoint, QLatin1String(kPhotoDir))
+                                       "?media_type=%2&path=%3&start=0&count=%4")
+                            .arg(m_endpoint)
+                            .arg(m_mediaType)
+                            .arg(m_remotePath)
                             .arg(kListCount);
     setBusy(true);
-    setStatus(QStringLiteral("正在读取相机文件列表…"));
+    setStatus(QStringLiteral("正在读取相机%1列表…").arg(m_mediaLabel));
     trace(QStringLiteral("请求列表: %1").arg(url));
 
     QNetworkRequest request{QUrl(url)};
@@ -221,6 +329,18 @@ void PhotoLibrary::handleListReply(QNetworkReply *reply, bool newestOnly)
         m_queue.clear();
         if (!m_photos.isEmpty() && m_photos.first().localPath.isEmpty())
             m_queue.append(m_photos.first().name);
+    } else if (!m_autoDownload) {
+        // 录像等大文件：只列列表，下载必须手动点（避免一刷新就拉几百 MB）
+        m_queue.clear();
+        int cached = 0;
+        for (const Photo &media : m_photos) {
+            if (!media.localPath.isEmpty())
+                ++cached;
+        }
+        setStatus(QStringLiteral("共 %1 个%2，已缓存 %3 个（点条目可下载）")
+                      .arg(m_photos.size()).arg(m_mediaLabel).arg(cached));
+        emit photosChanged();
+        return;
     } else {
         m_queue.clear();
         for (const Photo &photo : m_photos) {
@@ -230,11 +350,12 @@ void PhotoLibrary::handleListReply(QNetworkReply *reply, bool newestOnly)
     }
 
     if (m_queue.isEmpty()) {
-        setStatus(QStringLiteral("共 %1 张照片（已全部缓存）").arg(m_photos.size()));
+        setStatus(QStringLiteral("共 %1 个%2（已全部缓存）")
+                      .arg(m_photos.size()).arg(m_mediaLabel));
         return;
     }
-    setStatus(QStringLiteral("共 %1 张，正在下载 %2 张…")
-                  .arg(m_photos.size()).arg(m_queue.size()));
+    setStatus(QStringLiteral("共 %1 个%2，正在下载 %3 个…")
+                  .arg(m_photos.size()).arg(m_mediaLabel).arg(m_queue.size()));
     startNextDownload();
 }
 
@@ -242,7 +363,8 @@ void PhotoLibrary::startNextDownload()
 {
     if (m_queue.isEmpty()) {
         setBusy(false);
-        setStatus(QStringLiteral("共 %1 张照片").arg(m_photos.size()));
+        setDownloadProgress(QString(), 0.0, QString());
+        setStatus(QStringLiteral("共 %1 个%2").arg(m_photos.size()).arg(m_mediaLabel));
         return;
     }
     const QString name = m_queue.takeFirst();
@@ -260,11 +382,45 @@ void PhotoLibrary::startNextDownload()
 
     setBusy(true);
     setStatus(QStringLiteral("正在下载 %1…").arg(name));
+    m_downloadTotal = 0;
+    m_downloadDone = 0;
+    setDownloadProgress(name, 0.0, QStringLiteral("开始下载"));
+
+    // 流式写盘：录像动辄上百 MB，不能整包读进内存
+    m_downloadName = name;
+    m_downloadFile = new QFile(localPathFor(name), this);
+    if (!m_downloadFile->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        setStatus(QStringLiteral("无法写入缓存：%1").arg(m_downloadFile->fileName()));
+        m_downloadFile->deleteLater();
+        m_downloadFile = nullptr;
+        setBusy(false);
+        return;
+    }
+
     const QString url = m_endpoint + m_photos.at(index).remotePath;
     trace(QStringLiteral("下载: %1").arg(url));
     QNetworkRequest request{QUrl(url)};
-    request.setTransferTimeout(20000);
+    // 录像文件大，给足超时（照片也用同一值，没有副作用）
+    request.setTransferTimeout(120000);
     QNetworkReply *reply = m_network->get(request);
+    // 进度反馈：录像动辄上百 MB，界面必须有进度
+    connect(reply, &QNetworkReply::downloadProgress, this,
+            [this, name](qint64 received, qint64 total) {
+                m_downloadTotal = total;
+                m_downloadDone = received;
+                const double pct = (total > 0) ? (100.0 * received / total) : 0.0;
+                const QString text = (total > 0)
+                    ? QStringLiteral("%1 / %2 MB")
+                          .arg(received / 1048576.0, 0, 'f', 1)
+                          .arg(total / 1048576.0, 0, 'f', 1)
+                    : QStringLiteral("%1 MB").arg(received / 1048576.0, 0, 'f', 1);
+                setDownloadProgress(name, pct, text);
+            });
+    // 边收边写
+    connect(reply, &QNetworkReply::readyRead, this, [this, reply]() {
+        if (m_downloadFile && m_downloadFile->isOpen())
+            m_downloadFile->write(reply->readAll());
+    });
     connect(reply, &QNetworkReply::finished, this,
             [this, reply]() { handleDownloadReply(reply); });
 }
@@ -272,38 +428,56 @@ void PhotoLibrary::startNextDownload()
 void PhotoLibrary::handleDownloadReply(QNetworkReply *reply)
 {
     reply->deleteLater();
+
+    // 收尾：把流式写入的文件关掉（无论成败）
+    const QString name = m_downloadName;
+    qint64 written = 0;
+    if (m_downloadFile) {
+        if (m_downloadFile->isOpen()) {
+            m_downloadFile->write(reply->readAll());   // 收尾残余
+            written = m_downloadFile->size();
+            m_downloadFile->close();
+        }
+        m_downloadFile->deleteLater();
+        m_downloadFile = nullptr;
+    }
+    m_downloadName.clear();
+
     if (reply->error() != QNetworkReply::NoError) {
         trace(QStringLiteral("下载失败: %1").arg(reply->errorString()));
         setStatus(QStringLiteral("下载失败：%1").arg(reply->errorString()));
+        setDownloadProgress(QString(), 0.0, QString());
+        // 删掉半截文件，避免下次误判"已缓存"
+        if (!name.isEmpty())
+            QFile::remove(localPathFor(name));
+        setBusy(false);
+        startNextDownload();
+        return;
+    }
+
+    if (name.isEmpty() || written <= 0) {
+        setStatus(QStringLiteral("下载内容为空"));
+        setDownloadProgress(QString(), 0.0, QString());
         setBusy(false);
         return;
     }
 
-    const QString url = reply->url().path();
-    const QString name = url.section(QLatin1Char('/'), -1);
-    const QByteArray data = reply->readAll();
     const QString local = localPathFor(name);
-
-    QFile file(local);
-    if (!file.open(QIODevice::WriteOnly)) {
-        setStatus(QStringLiteral("无法写入缓存：%1").arg(local));
-        setBusy(false);
-        return;
-    }
-    file.write(data);
-    file.close();
-
     for (Photo &photo : m_photos) {
         if (photo.name == name) {
             photo.localPath = local;
-            photo.sizeBytes = data.size();
+            photo.sizeBytes = written;
             break;
         }
     }
-    trace(QStringLiteral("已保存 %1（%2 字节）→ %3").arg(name).arg(data.size()).arg(local));
+    trace(QStringLiteral("已保存 %1（%2 字节）→ %3").arg(name).arg(written).arg(local));
     emit photosChanged();
     emit photoReady(name, local);
-    emit notified(QStringLiteral("已取回 %1（%2 KB）").arg(name).arg(data.size() / 1024));
+    if (written >= 1048576)
+        emit notified(QStringLiteral("已取回 %1（%2 MB）").arg(name).arg(written / 1048576.0, 0, 'f', 1));
+    else
+        emit notified(QStringLiteral("已取回 %1（%2 KB）").arg(name).arg(written / 1024));
+    setDownloadProgress(QString(), 0.0, QString());
 
     startNextDownload();
 }
