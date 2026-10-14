@@ -639,9 +639,12 @@ void GimbalLink::setZoomAbsolute(double multiple)
     payload.append(static_cast<char>(static_cast<int>(request) & 0xFF));
     payload.append(static_cast<char>(std::lround((request - std::floor(request)) * 10.0)));
     sendCommand(kCmdZoomAbsolute, payload);
-    // 先乐观显示目标值；随后 0x18 轮询会用相机回报的真实值纠正
+    // 先乐观显示目标值；随后用相机回报的真实值纠正
     m_zoom = clamped;
     emit changed();
+    // 变焦是【渐变】的，实测约 2 秒才到位（1.5s 时会读到 1.3~2.1 这样的中间值），
+    // 所以 2.5 秒后再回读一次，避免界面停在中间值上。
+    QTimer::singleShot(2500, this, [this]() { sendCommand(kCmdCurrentZoom, QByteArray()); });
 }
 
 void GimbalLink::refreshStatus()
