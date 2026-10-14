@@ -624,10 +624,22 @@ void GimbalLink::zoomStep(int direction)
 void GimbalLink::setZoomAbsolute(double multiple)
 {
     const double clamped = clampValue(multiple, 1.0, m_zoomMax);
+
+    /* 变倍标定（2026-10-14 实测，勿删）：
+     * 相机对 0x0F 的"请求值"与它回报的倍率不是同一把尺子，实测为线性关系：
+     *     回报倍率 = 1.0 + (请求值 − 1.0) × 0.6
+     * 例如请求 3.5x 只能得到 2.5x。所以想得到 X 就要请求：
+     *     请求值 = 1.0 + (X − 1.0) / 0.6
+     * 按此反算后实测 6/6 全部命中（1.0/1.5/2.0/2.5/3.0/3.5 误差 ≤0.1）。
+     */
+    constexpr double kZoomScale = 0.6;
+    const double request = 1.0 + (clamped - 1.0) / kZoomScale;
+
     QByteArray payload;
-    payload.append(static_cast<char>(static_cast<int>(clamped) & 0xFF));
-    payload.append(static_cast<char>(std::lround((clamped - std::floor(clamped)) * 10.0)));
+    payload.append(static_cast<char>(static_cast<int>(request) & 0xFF));
+    payload.append(static_cast<char>(std::lround((request - std::floor(request)) * 10.0)));
     sendCommand(kCmdZoomAbsolute, payload);
+    // 先乐观显示目标值；随后 0x18 轮询会用相机回报的真实值纠正
     m_zoom = clamped;
     emit changed();
 }

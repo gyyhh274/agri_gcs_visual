@@ -269,8 +269,17 @@ int main(int argc, char *argv[])
             // 拍照：验证 0x0B 真实反馈，以及 QML 里"拍照成功 → 自动取回"的钩子
             gimbalLink.takePhoto();
         });
-        QTimer::singleShot(16000, &app, [report, &app]() {
+        QTimer::singleShot(16000, &app, [report, &gimbalLink]() {
             report(QStringLiteral("拍照后"));
+            // 变倍标定自检：设 2.5x，回读应≈2.5x（校正公式见 setZoomAbsolute）
+            gimbalLink.setZoomAbsolute(2.5);
+        });
+        QTimer::singleShot(18500, &app, [report, &gimbalLink]() {
+            report(QStringLiteral("设2.5x 回读"));
+            gimbalLink.setZoomAbsolute(1.0);   // 复原
+        });
+        QTimer::singleShot(21000, &app, [report, &app]() {
+            report(QStringLiteral("变倍复原后"));
             app.exit(0);
         });
     }
