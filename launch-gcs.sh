@@ -31,9 +31,21 @@ cd "$PROJ" || exit 1
 : > "$LOG"
 # "$@" 透传命令行参数（如 --start-page 2 直接打开设置页），桌面图标双击时不带参数
 nohup ./build/agri_gcs_visual "$@" >>"$LOG" 2>&1 &
-sleep 3
 
-if pgrep -f '[b]uild/agri_gcs_visual' >/dev/null 2>&1; then
+# 启动确认：应用需要几秒完成 QML 加载，过早检查会误报"启动失败"。
+# 轮询最多 12 秒：进程稳定存活且无 QML 加载失败即算成功。
+OK=0
+for i in $(seq 1 12); do
+    sleep 1
+    pgrep -f '[b]uild/agri_gcs_visual' >/dev/null 2>&1 || break     # 进程没了 → 失败
+    grep -q 'QQmlApplicationEngine failed' "$LOG" 2>/dev/null && break  # QML 加载失败
+    if [ "$i" -ge 4 ]; then
+        OK=1
+        break
+    fi
+done
+
+if [ "$OK" = "1" ]; then
     notify "地面站已启动（地址会自动发现）"
 else
     notify "启动失败，详见 $LOG"

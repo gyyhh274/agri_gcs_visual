@@ -32,6 +32,10 @@ Item {
     readonly property string currentUrl: VideoConfig.url
 
     property bool retryPending: false
+    // 当前已建立连接的标识（用于幂等保护，避免重复拆建）
+    property string activeRevision: ""
+    // 用户点「重连」/点画面时强制重建（会清掉标识，绕过幂等保护）
+    property bool forceNextStart: false
     // 诊断输出开关（排查"假在线"等问题时打开）
     property bool diagnostics: Qt.application.arguments.indexOf("--video-diag") >= 0
 
@@ -125,10 +129,20 @@ Item {
         failures = 0
         pipelineMode = true
         retryPending = false
-        if (wantActive)
-            startDelay.restart()
-        else
+        if (!wantActive) {
             stopNow()
+            return
+        }
+        // 用户手动重连时清掉标识，绕过 applySource 里的幂等保护
+        if (forceNextStart)
+            activeRevision = ""
+        startDelay.restart()
+    }
+
+    // 用户主动重连：必须真的重建（否则会被幂等保护挡掉）
+    function reconnectNow() {
+        forceNextStart = true
+        requestStart()
     }
 
     function stopNow() {
@@ -137,6 +151,7 @@ Item {
         loadedWatchdog.stop()
         player.stop()
         player.source = ""
+        activeRevision = ""
         refreshState()
     }
 
@@ -145,6 +160,19 @@ Item {
         retryPending = false
         if (!wantActive) { stopNow(); return }
         var next = pipelineMode ? VideoConfig.buildPipeline() : VideoConfig.plainUrl()
+        /* 幂等保护：如果已经在播同一路流，直接返回，不要拆了重建。
+         * 起因：页面用 Loader 切换、布局稳定过程中会重复触发 start 请求，
+         * 每次都会 TEARDOWN + 重连，而 H.265 是帧间预测编码，
+         * 重连后要等下一个关键帧画面才恢复 —— 表现为"花屏 + 抖动"。
+         * 实测启动阶段因此重建了 5 次。 */
+        var revision = VideoConfig.pipelineRevision + "|" + pipelineMode
+        if (!forceNextStart && revision === activeRevision && player.source === next
+                && player.playbackState === MediaPlayer.PlayingState) {
+            logStatus("已在播放同一路流，跳过重复重建")
+            return
+        }
+        forceNextStart = false
+        activeRevision = revision
         // 重新计时：新连接在真正出帧前不得被判为 live
         lastPosition = -1
         lastProgressAt = 0
@@ -171,10 +199,6 @@ Item {
         logStatus("失败重试 #" + failures + " delay=" + delay + " pipeline=" + pipelineMode)
         retryTimer.interval = delay
         retryTimer.restart()
-    }
-
-    function reconnectNow() {
-        requestStart()
     }
 
     MediaPlayer {
@@ -274,7 +298,7 @@ Item {
     Connections {
         target: VideoConfig
         function onPipelineRevisionChanged() { if (root.wantActive) root.requestStart() }
-        function onReconnectRequestChanged() { VideoConfig.enabled = true; root.requestStart() }
+        function onReconnectRequestChanged() { VideoConfig.enabled = true; root.reconnectNow() }
     }
 
     onWantActiveChanged: wantActive ? requestStart() : stopNow()

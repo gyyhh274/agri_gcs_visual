@@ -12,7 +12,7 @@ A8 mini 云台相机                      Jetson 机载电脑 (ubuntu / 192.168.
                                         ├─ MediaMTX v1.21.1 中转服务
                                         │    /etc/mediamtx/mediamtx.yml
                                         │    监听 0.0.0.0:8554，仅 TCP
-                                        │    路径 a8mini，按需拉流(sourceOnDemand)
+                                        │    路径 a8mini，常驻拉流(sourceOnDemand:false)
                                         │    只读账号 a8viewer，仅限本地网段
                                         │
   地面站（笔记本上的虚拟机）  ◄──────────┘  经 Wi-Fi 192.168.2.113:8554
@@ -41,7 +41,10 @@ paths:
   a8mini:
     source: rtsp://192.168.144.25:8554/main.264
     rtspTransport: tcp
-    sourceOnDemand: true       # 无人观看时不占相机的连接
+    # 常驻拉流（勿改回 true）：按需拉流会在最后一个客户端断开时停止拉相机，
+    # 地面站重启就得重建相机会话，H.265 要重新等关键帧 → 花屏好几秒。
+    # 常驻后重启只是新客户端接入，实测约 1 秒恢复。
+    sourceOnDemand: false
 ```
 
 配置注释原文也确认了编码事实：*"No transcoding. The camera path is named

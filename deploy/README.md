@@ -91,7 +91,12 @@ ss -tlnp | grep 8554        # 应看到 mediamtx 监听 0.0.0.0:8554
 paths:
   a8mini:
     source: rtsp://192.168.144.25:8554/main.264
-    sourceOnDemand: true          # 无人观看时不拉流，保护相机
+    # ⚠️ 必须是 false（常驻拉流），不要改回 true。
+    # on-demand 会在最后一个客户端断开时停止拉相机：地面站一旦重启
+    # 就得重建相机会话，H.265 需要重新等关键帧，画面要花屏好几秒。
+    # 常驻后地面站重启只是「新客户端接入」，实测约 1 秒恢复。
+    # 代价：相机链路常占约 2 Mbps。
+    sourceOnDemand: false
     rtspTransports: [tcp]
 ```
 

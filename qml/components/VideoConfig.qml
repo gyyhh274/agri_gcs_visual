@@ -25,7 +25,8 @@ Item {
     //     → Jetson 上的 MediaMTX 中转 (0.0.0.0:8554, 路径 a8mini, read 需认证)
     //     → 地面站经 Wi-Fi 拉流 rtsp://192.168.2.113:8554/a8mini
     //   MediaMTX 只开 TCP，且该流实际编码是 H.265（配置里注明 "named main.264
-    //   but carries H.265"）。中转按需拉流（sourceOnDemand），不影响相机。
+    //   but carries H.265"）。中转**常驻拉流**（sourceOnDemand: false），
+    //   相机流一直热着，地面站重启只是新客户端接入，约 1 秒即可恢复画面。
     readonly property var codecNames: ["自动识别", "H.264", "H.265"]
     readonly property var transportNames: ["TCP（推荐）", "UDP"]
 
