@@ -29,7 +29,8 @@ fi
 
 cd "$PROJ" || exit 1
 : > "$LOG"
-nohup ./build/agri_gcs_visual >>"$LOG" 2>&1 &
+# "$@" 透传命令行参数（如 --start-page 2 直接打开设置页），桌面图标双击时不带参数
+nohup ./build/agri_gcs_visual "$@" >>"$LOG" 2>&1 &
 sleep 3
 
 if pgrep -f '[b]uild/agri_gcs_visual' >/dev/null 2>&1; then

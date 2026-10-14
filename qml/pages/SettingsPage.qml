@@ -164,7 +164,18 @@ Item {
 
     Component {
         id: connectionSettings
-        Column {
+        // 用 Flickable 包起来：内容超出可视高度时可以用鼠标滚轮上下滑，
+        // 否则底部的行会被裁掉且无法查看（实测小窗口下会切掉 1~2 行）
+        Flickable {
+            id: connFlick
+            contentWidth: width
+            contentHeight: connContent.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Column {
+            id: connContent
+            width: connFlick.width
             spacing: 10
             GCard {
                 width: parent.width; height: 438; title: page.overviewMode ? "系统设置" : "连接设置"
@@ -222,7 +233,12 @@ Item {
                 }
             }
             Row {
-                width: parent.width; height: 248; spacing: 8
+                // 高度按「网络与通信」卡片的实际内容算：
+                //   7 行（机载电脑/派生地址/发现状态/传输编码/认证账号/图传状态/机载遥测）
+                //   = 31+30+20+31+31+31+31 = 205，行距 6×2=12，标题与内边距约 46 → 263
+                // 之前是 248，做自动发现时加了一行"未扫描"提示，把最后一行顶出卡片外
+                // （表现为「机载遥测 / 测试连接」被切掉）。留 15px 余量。
+                width: parent.width; height: 278; spacing: 8
                 GCard {
                     id: networkCard
                     width: Math.round((parent.width - parent.spacing) * 0.535); height: parent.height; title: "网络与通信"
@@ -383,7 +399,10 @@ Item {
                 }
             }
             Row {
-                width: parent.width; height: parent.height - 706; spacing: 8
+                // 原来是 height: parent.height - 706（"填满剩余高度"），
+                // 该写法依赖父容器有固定高度，内容一超出就被裁掉且无法查看。
+                // 改成固定高度，超出部分由外层 Flickable 滚动查看。
+                width: parent.width; height: 240; spacing: 8
                 GCard {
                     width: 486; height: parent.height; title: "时间与时区"
                     Column {
@@ -413,12 +432,24 @@ Item {
                 }
             }
         }
+        }
     }
 
     Component {
         id: configurationSettings
-        GCard {
+        // 同样包一层 Flickable：字段多的分页（如"无人机设置"6 行）在窗口矮时
+        // 底部会被切掉，加滚动后可查看
+        Flickable {
+            id: confFlick
+            contentWidth: width
+            contentHeight: Math.max(height, confCol.y + confCol.height + 20)
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            GCard {
             id: configurationCard
+            width: confFlick.width
+            height: confFlick.contentHeight
             title: page.sectionNames[page.sectionIndex]
             property var sectionFields: [[],
                 [["设备名称", "aircraftName"], ["无人机型号", "aircraftModel"], ["飞控类型", "autopilot"], ["飞控串口", "serialPort"], ["波特率", "baudRate"], ["返航高度（m）", "returnHeight"]],
@@ -430,6 +461,7 @@ Item {
                 [["终端名称", "deviceName"], ["界面缩放（%）", "uiScale"], ["屏幕亮度（%）", "brightness"], ["显示语言", "language"]]
             ]
             Column {
+                id: confCol
                 x: 24; y: 20; width: parent.width - 48; spacing: 15
                 Text { text: page.sectionNames[page.sectionIndex] + "参数"; color: "#e6f0fb"; font.pixelSize: 18; font.bold: true }
                 Text { width: parent.width; text: "本地配置 · 演示模式"; color: "#7898b3"; font.pixelSize: 13 }
@@ -451,6 +483,7 @@ Item {
                     GButton { width: 130; height: 39; text: "保存设置"; fill: "#087dff"; onClicked: page.save() }
                     Text { height: 39; text: "设置保存在本机，未向无人机或机巢下发"; color: "#7898b3"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
                 }
+            }
             }
         }
     }
