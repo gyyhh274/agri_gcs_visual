@@ -52,6 +52,7 @@ signals:
     void finished(bool ok, const QString &message);
 
 private:
+    void beginScan();
     void beginBatch();
     void finishBatch();
     void probeCandidates(const QStringList &hosts, quint16 port,
@@ -63,6 +64,7 @@ private:
 
     QList<QString> m_pending;      // 待探测（8554）
     QStringList m_hits;            // 8554 命中的候选（再验 37261）
+    QString m_lastKnownHost;       // 本次扫描参考的"上次地址"
     QTcpSocket *m_socket{nullptr};
     QTimer *m_batchTimer{nullptr};
     QString m_foundHost;

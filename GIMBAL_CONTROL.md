@@ -470,17 +470,54 @@ done
 **处置**（在机载电脑上执行）：
 
 ```bash
-# 立即生效
+# 1) 立即生效
 sudo iw dev wlan0 set power_save off
 
-# 持久化（重启后仍生效）
+# 2) 配置持久化：用 zz- 前缀确保字母序排在系统默认文件之后
 sudo mkdir -p /etc/NetworkManager/conf.d
-printf '[connection]\nwifi.powersave = 2\n' | sudo tee /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+printf '[connection]\nwifi.powersave = 2\n' \
+  | sudo tee /etc/NetworkManager/conf.d/zz-wifi-powersave-off.conf
+sudo systemctl reload NetworkManager
 
 # 复核
 iw dev wlan0 get power_save     # 应显示 Power save: off
 iwconfig wlan0 | grep Power     # 应显示 Power Management:off
 ```
+
+> ⚠️ **只写配置文件不够 —— 这个设置会被重置**。
+> 2026-10-15 实际遇到：先写好 conf 并生效过（延迟 480ms → 5ms），
+> 几小时后再测发现 `power_save` 又变回 `on`，而且**写的 conf 文件不见了**，
+> 只剩系统自带的 `default-wifi-powersave-on.conf`（`wifi.powersave = 3` = 启用省电）。
+>
+> 所以必须再加一层 **systemd 常驻保险**（开机/重连/唤醒后都会自动关）：
+
+```bash
+sudo tee /etc/systemd/system/wifi-powersave-off.service >/dev/null <<'EOF'
+[Unit]
+Description=Disable Wi-Fi power saving on wlan0
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/iw dev wlan0 set power_save off
+ExecReload=/sbin/iw dev wlan0 set power_save off
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now wifi-powersave-off.service
+```
+
+**省电模式打开时的连带现象**（便于识别）：
+
+| 现象 | 原因 |
+| --- | --- |
+| 云台一直"重连中" | 延迟 300~900ms → UDP 指令大量超时 |
+| 图传绿色花屏 | 高延迟抖动 → TCP 重传 → H.265 丢帧 |
+| **自动发现扫不到机载电脑** | 探测超时 450ms < 实际延迟 → 全部超时（已把超时放宽到 900ms 并加"先试已知地址"的快路径） |
 
 > 排查时**一定要先把地面站停掉再测**：相机与中转都是单客户端模型，
 > 用脚本测的同时应用还在轮询，两者会互相截胡应答，

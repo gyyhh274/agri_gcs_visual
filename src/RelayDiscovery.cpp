@@ -10,9 +10,18 @@
 namespace {
 constexpr quint16 kVideoPort = 8554;    // MediaMTX 图传中转
 constexpr quint16 kPhotoPort = 37261;   // 照片/视频文件代理
+
+// 前向声明：scan() 的快路径要用到（定义在文件后部）
+void probeOnce(const QString &host, quint16 port, int timeoutMs,
+               std::function<void(bool)> done);
 constexpr int kBatchSize = 64;          // 每批并发探测数
-constexpr int kConnectTimeoutMs = 450;  // 单个地址的探测超时
-constexpr int kVerifyTimeoutMs = 700;   // 二次确认超时
+/* 单个地址的探测超时。
+ * ⚠️ 不要调得太小：实测 Wi-Fi 省电模式下链路延迟会到 480ms，
+ *    原来的 450ms 会让【所有】地址都超时，扫描结果变成"一个都没找到"，
+ *    而目标其实好好的（2026-10-15 实际踩到过）。
+ *    900ms 能容忍慢链路，又不至于让扫描慢到不可用。 */
+constexpr int kConnectTimeoutMs = 900;
+constexpr int kVerifyTimeoutMs = 1200;  // 二次确认超时
 
 void trace(const QString &message)
 {
@@ -71,6 +80,52 @@ void RelayDiscovery::scan(const QString &lastKnownHost)
     if (m_scanning)
         return;
 
+    /* ── 快路径：先直接试当前/上次用的地址 ──────────────────────
+     * 地址没变是最常见的情况。直接探一次，通了就立刻返回，
+     * 不必扫整个网段（既快又不产生几百个连接）。
+     * 只有它不通时才退化成全网段扫描。 */
+    const QString known = lastKnownHost.trimmed();
+    m_lastKnownHost = known;
+    if (!known.isEmpty() && known.count(QLatin1Char('.')) == 3) {
+        m_scanning = true;
+        setStatus(QStringLiteral("正在确认 %1 …").arg(known));
+        emit changed();
+        trace(QStringLiteral("快路径：先探测已配置地址 %1").arg(known));
+        probeOnce(known, kVideoPort, kConnectTimeoutMs, [this, known](bool ok) {
+            if (!ok) {
+                trace(QStringLiteral("已配置地址不可用，转入全网段扫描"));
+                m_scanning = false;
+                beginScan();
+                return;
+            }
+            // 8554 通了，再确认 37261（照片/录像代理），避免误认别的 RTSP 服务
+            probeOnce(known, kPhotoPort, kVerifyTimeoutMs, [this, known](bool ok2) {
+                m_scanning = false;
+                if (ok2) {
+                    m_foundHost = known;
+                    setStatus(QStringLiteral("已找到机载电脑：%1（原地址有效）").arg(known));
+                    trace(QStringLiteral("快路径命中: %1").arg(known));
+                    emit changed();
+                    emit found(known);
+                    emit finished(true, m_status);
+                } else {
+                    trace(QStringLiteral("8554 通但 37261 不通，转入全网段扫描"));
+                    beginScan();
+                }
+            });
+        });
+        return;
+    }
+
+    beginScan();
+}
+
+// 全网段扫描（慢路径）
+void RelayDiscovery::beginScan()
+{
+    if (m_scanning)
+        return;
+
     // ── 收集候选网段 ──────────────────────────────────────────
     QStringList bases;
     const auto addBase = [&bases](const QString &ip) {
@@ -84,8 +139,8 @@ void RelayDiscovery::scan(const QString &lastKnownHost)
     };
 
     // 1) 上次用过的地址所在网段（地面站在 NAT 后时，这个最要紧）
-    if (!lastKnownHost.trimmed().isEmpty())
-        addBase(lastKnownHost.trimmed());
+    if (!m_lastKnownHost.trimmed().isEmpty())
+        addBase(m_lastKnownHost.trimmed());
 
     // 2) 本机各网卡的网段
     for (const QHostAddress &address : QNetworkInterface::allAddresses()) {
@@ -130,8 +185,8 @@ void RelayDiscovery::scan(const QString &lastKnownHost)
 }
 
 // 探测一个端口：连上即算命中
-static void probeOnce(const QString &host, quint16 port, int timeoutMs,
-                      std::function<void(bool)> done)
+static void probeOnceImpl(const QString &host, quint16 port, int timeoutMs,
+                          std::function<void(bool)> done)
 {
     auto *socket = new QTcpSocket;
     auto *timer = new QTimer(socket);
@@ -158,6 +213,15 @@ static void probeOnce(const QString &host, quint16 port, int timeoutMs,
     timer->start(timeoutMs);
     socket->connectToHost(host, port);
 }
+
+namespace {
+// 包装：把实现暴露成前面声明过的 probeOnce
+void probeOnce(const QString &host, quint16 port, int timeoutMs,
+               std::function<void(bool)> done)
+{
+    probeOnceImpl(host, port, timeoutMs, std::move(done));
+}
+} // namespace
 
 void RelayDiscovery::beginBatch()
 {
