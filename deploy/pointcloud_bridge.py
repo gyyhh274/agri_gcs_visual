@@ -16,7 +16,7 @@ import xmlrpc.client
 PREFIX = struct.Struct("<4sII")
 POINT = struct.Struct("<ffff")
 MAX_HEADER = 16384
-MAX_PAYLOAD = 8 * 1024 * 1024
+MAX_PAYLOAD = 32 * 1024 * 1024
 
 
 def encode_frame(header, payload=b""):
@@ -50,7 +50,7 @@ class FrameDecoder:
 
 class Peer:
     """One bounded outbound queue; a slow receiver cannot block ROS callbacks."""
-    def __init__(self, connection, maximum_bytes=8 * 1024 * 1024, maximum_frames=32):
+    def __init__(self, connection, maximum_bytes=40 * 1024 * 1024, maximum_frames=32):
         self.connection = connection
         self.maximum_bytes = maximum_bytes
         self.maximum_frames = maximum_frames
@@ -104,7 +104,7 @@ class Peer:
 
 
 class MapBridge:
-    def __init__(self, voxel_size=0.15, maximum_points=250000, maximum_clients=4,
+    def __init__(self, voxel_size=0.025, maximum_points=1500000, maximum_clients=4,
                  demo=False, clock=time.monotonic):
         self.lock = threading.RLock()
         self.clock = clock
@@ -169,6 +169,7 @@ class MapBridge:
                 self._reset(self.frame, "ROS point cloud publisher changed or restarted")
             self.last_source_sequence = sequence
             self.source_caller = caller
+            return bool(changed or rolled_back)
 
     def status(self):
         if self.demo:
@@ -224,7 +225,7 @@ class MapBridge:
                 self._reset(frame, "source timestamp moved backwards")
             changes = OrderedDict()
             for index, point in enumerate(points):
-                if index >= 8000:
+                if index >= 20000:
                     break
                 if len(point) != 4 or not all(math.isfinite(value) for value in point):
                     continue
@@ -285,7 +286,7 @@ def serve(bridge, listener, stop):
             threading.Thread(target=peer.run, daemon=True, name="mapping-client").start()
 
 
-def sampled_cloud(message, maximum=8000):
+def sampled_cloud(message, maximum=20000):
     """Decode only sampled points, including organized clouds and endian variants."""
     fields = {field.name: field for field in message.fields}
     types = {1: "b", 2: "B", 3: "h", 4: "H", 5: "i", 6: "I", 7: "f", 8: "d"}
@@ -325,6 +326,53 @@ class TimeoutTransport(xmlrpc.client.Transport):
         return connection
 
 
+class BodyCloudAligner:
+    """Use the exact LIO pose for its undistorted body-frame scan, never latest pose."""
+    def __init__(self, tolerance=0.02):
+        self.tolerance = tolerance
+        self.lock = threading.Lock()
+        self.poses = deque(maxlen=80)
+
+    def clear(self):
+        with self.lock:
+            self.poses.clear()
+
+    def add_pose(self, stamp, frame, body, position, orientation):
+        if not math.isfinite(stamp) or not frame or not body:
+            return
+        values = tuple(position) + tuple(orientation)
+        if len(position) != 3 or len(orientation) != 4 or not all(math.isfinite(v) for v in values):
+            return
+        norm = math.sqrt(sum(v*v for v in orientation))
+        if norm < 1e-9:
+            return
+        pose = (stamp, frame.lstrip('/'), body.lstrip('/'), tuple(position), tuple(v/norm for v in orientation))
+        with self.lock:
+            if self.poses and stamp < self.poses[-1][0]:
+                self.poses.clear()
+            self.poses.append(pose)
+
+    def transform(self, message):
+        stamp = message.header.stamp.to_sec()
+        body = message.header.frame_id.lstrip('/')
+        with self.lock:
+            candidates = [p for p in self.poses if p[2] == body and abs(p[0]-stamp) <= self.tolerance]
+            if not candidates:
+                return None
+            pose = min(candidates, key=lambda p: abs(p[0]-stamp))
+        _, frame, _, translation, q = pose
+        x, y, z, w = q
+        rotation = (1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w),
+                    2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w),
+                    2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y))
+        def transformed():
+            for px, py, pz, intensity in sampled_cloud(message):
+                yield (rotation[0]*px+rotation[1]*py+rotation[2]*pz+translation[0],
+                       rotation[3]*px+rotation[4]*py+rotation[5]*pz+translation[1],
+                       rotation[6]*px+rotation[7]*py+rotation[8]*pz+translation[2], intensity)
+        return transformed(), frame
+
+
 def master_available(uri):
     try:
         with xmlrpc.client.ServerProxy(uri, transport=TimeoutTransport()) as master:
@@ -333,7 +381,7 @@ def master_available(uri):
         return False
 
 
-def ros_worker(bridge, stop, max_hz):
+def ros_worker(bridge, stop, max_hz, cloud_source='body'):
     # Import ROS only here: TCP status works even without ROS packages or a master.
     try:
         import rospy
@@ -343,34 +391,60 @@ def ros_worker(bridge, stop, max_hz):
         bridge.set_ros(False, "ROS 依赖不可用：" + str(exc))
         return
 
-    last_cloud = [0.0]
     last_pose = [0.0]
     callback_lock = threading.Lock()
+    pending = deque(maxlen=2)
+    aligner = BodyCloudAligner()
 
     def cloud_callback(message):
-        now = time.monotonic()
         with callback_lock:
             connection_header = getattr(message, "_connection_header", {}) or {}
-            bridge.observe_source(message.header.seq, connection_header.get("callerid", ""))
-            if now - last_cloud[0] < 1.0 / max_hz:
-                return
-            last_cloud[0] = now
-        try:
-            bridge.publish_cloud(sampled_cloud(message), message.header.stamp.to_sec(),
-                                 message.header.frame_id.lstrip("/"))
-        except (ValueError, TypeError, struct.error, OverflowError) as exc:
-            bridge.set_ros(True, "忽略无效点云：" + str(exc))
+            if bridge.observe_source(message.header.seq, connection_header.get("callerid", "")):
+                aligner.clear()
+            pending.append((message, time.monotonic()))
+
+    def process_clouds():
+        last_slot = -1
+        while not stop.wait(0.005):
+            slot = int(time.monotonic() * max_hz)
+            if slot == last_slot:
+                continue
+            with callback_lock:
+                if not pending:
+                    continue
+                message, received = pending[-1]
+            try:
+                result = aligner.transform(message) if cloud_source == 'body' else (
+                    sampled_cloud(message), message.header.frame_id.lstrip('/'))
+                if result is None:
+                    if time.monotonic() - received > 0.2:
+                        with callback_lock:
+                            if pending and pending[-1][0] is message:
+                                pending.clear()
+                    continue
+                points, frame = result
+                bridge.publish_cloud(points, message.header.stamp.to_sec(), frame)
+                last_slot = slot
+            except (ValueError, TypeError, struct.error, OverflowError) as exc:
+                bridge.set_ros(True, '忽略无效点云：' + str(exc))
+            with callback_lock:
+                if pending and pending[-1][0] is message:
+                    pending.clear()
 
     def pose_callback(message):
+        p, q = message.pose.pose.position, message.pose.pose.orientation
+        aligner.add_pose(message.header.stamp.to_sec(), message.header.frame_id,
+                         message.child_frame_id, (p.x, p.y, p.z), (q.x, q.y, q.z, q.w))
         now = time.monotonic()
         with callback_lock:
             if now - last_pose[0] < 0.05:
                 return
             last_pose[0] = now
-        p, q = message.pose.pose.position, message.pose.pose.orientation
         bridge.publish_pose((p.x, p.y, p.z), (q.x, q.y, q.z, q.w),
                             message.header.stamp.to_sec(), message.header.frame_id.lstrip("/"))
 
+    cloud_thread = threading.Thread(target=process_clouds, daemon=True, name='dense-map-processing')
+    cloud_thread.start()
     initialized = False
     reconnect_reset_needed = False
     subscribers = []
@@ -388,13 +462,15 @@ def ros_worker(bridge, stop, max_hz):
             try:
                 if reconnect_reset_needed:
                     bridge.reset_source("ROS master reconnected")
+                    aligner.clear()
                     reconnect_reset_needed = False
                 if not initialized:
                     rospy.init_node("agri_pointcloud_bridge", anonymous=True,
                                     disable_signals=True, log_level=rospy.WARN)
                     initialized = True
                 subscribers = [
-                    rospy.Subscriber("/laserMapping/cloud_registered", PointCloud2,
+                    rospy.Subscriber('/laserMapping/cloud_registered_body' if cloud_source == 'body'
+                                     else '/laserMapping/cloud_registered', PointCloud2,
                                      cloud_callback, queue_size=1, buff_size=8 * 1024 * 1024),
                     rospy.Subscriber("/laserMapping/odometry", Odometry,
                                      pose_callback, queue_size=1)]
@@ -444,6 +520,8 @@ def main():
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=37262)
     parser.add_argument("--max-hz", type=float, default=5.0)
+    parser.add_argument('--cloud-source', choices=('body', 'world'), default='body',
+                        help='body preserves undistorted scan detail using synchronized LIO poses')
     parser.add_argument("--demo", action="store_true", help="Explicit synthetic scene; never uses ROS")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535 or not 0.5 <= args.max_hz <= 10:
@@ -461,7 +539,7 @@ def main():
         threading.Thread(target=serve, args=(bridge, listener, stop), daemon=True,
                          name="mapping-server").start()
         worker = demo_worker if args.demo else ros_worker
-        arguments = (bridge, stop) if args.demo else (bridge, stop, args.max_hz)
+        arguments = (bridge, stop) if args.demo else (bridge, stop, args.max_hz, args.cloud_source)
         threading.Thread(target=worker, args=arguments, daemon=True,
                          name="mapping-source").start()
         try:

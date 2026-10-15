@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(AgriGcsVisual VERSION 1.5.0 LANGUAGES CXX)
+project(AgriGcsVisual VERSION 1.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ add_executable(agri_gcs_visual MACOSX_BUNDLE
     src/RelayDiscovery.cpp src/RelayDiscovery.h
     src/MappingTypes.h src/MappingClient.cpp src/MappingClient.h
     src/PointCloudView.cpp src/PointCloudView.h
+    src/PointCloudGpuItem.cpp src/PointCloudGpuItem.h
     qml.qrc
 )
 
@@ -42,6 +43,7 @@ if(AGRI_GCS_BUILD_TESTS)
     find_package(Qt5 5.15 REQUIRED COMPONENTS Test)
     enable_testing()
     add_executable(ui_smoke tests/tst_ui.cpp src/AsyncTileMapItem.cpp src/AsyncTileMapItem.h src/OfflineMapSource.cpp src/OfflineMapSource.h src/NestPosition.cpp src/NestPosition.h src/AircraftProfile.cpp src/AircraftProfile.h src/GroundLink.cpp src/GroundLink.h src/MappingClient.cpp src/MappingClient.h src/PointCloudView.cpp src/PointCloudView.h qml.qrc)
+    target_sources(ui_smoke PRIVATE src/PointCloudGpuItem.cpp src/PointCloudGpuItem.h)
     target_link_libraries(ui_smoke PRIVATE Qt5::Core Qt5::Gui Qt5::Qml
         Qt5::Quick Qt5::QuickControls2 Qt5::Test Qt5::Positioning Qt5::Concurrent Qt5::Network)
     add_test(NAME ui_smoke COMMAND ui_smoke)
@@ -53,6 +55,10 @@ if(AGRI_GCS_BUILD_TESTS)
     target_include_directories(mapping_client_test PRIVATE src)
     target_link_libraries(mapping_client_test PRIVATE Qt5::Core Qt5::Gui Qt5::Network Qt5::Concurrent Qt5::Test)
     add_test(NAME mapping_client_test COMMAND mapping_client_test)
+    add_executable(pointcloud_geometry_test tests/tst_pointcloud_geometry.cpp src/PointCloudGeometry.h)
+    target_include_directories(pointcloud_geometry_test PRIVATE src)
+    target_link_libraries(pointcloud_geometry_test PRIVATE Qt5::Core Qt5::Gui Qt5::Test)
+    add_test(NAME pointcloud_geometry_test COMMAND pointcloud_geometry_test)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(NAME mapping_bridge_test COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -p test_pointcloud_bridge.py)

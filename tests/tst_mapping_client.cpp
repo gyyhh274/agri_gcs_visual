@@ -9,6 +9,7 @@
 #include <cstring>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QSet>
 #include "MappingClient.h"
 
 namespace {
@@ -36,6 +37,8 @@ QByteArray cloud(float x, float y = 0, float z = 0, float intensity = 1) {
 class MappingClientTest : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase() { qputenv("AGRI_GCS_MAP_MAX_POINTS", "250000"); }
+    void cleanupTestCase() { qunsetenv("AGRI_GCS_MAP_MAX_POINTS"); }
     void fragmentedFramesAndOriginReset();
     void invalidLengthsAndNonFinite();
     void stalePoseAndPause();
@@ -44,7 +47,39 @@ private slots:
     void clearAndResumeDiscardPartialFrames();
     void staleCachedSnapshotStaysStale();
     void destroyWhileConnected();
+    void denseVoxelHashDispersion();
 };
+void MappingClientTest::denseVoxelHashDispersion() {
+    QSet<uint> hashes;
+    constexpr int side = 64;
+    constexpr int count = side * side * side;
+    hashes.reserve(count);
+    int changedBySeed = 0;
+    for (int x = -side/2; x < side/2; ++x) {
+        for (int y = -side/2; y < side/2; ++y) {
+            for (int z = -side/2; z < side/2; ++z) {
+                const MappingVoxelKey key{x, y, z};
+                const uint hash = qHash(key);
+                hashes.insert(hash);
+                if (qHash(key, 0x12345678U) != hash) ++changedBySeed;
+            }
+        }
+    }
+    // A dense 1.6 m cube at 2.5 cm resolution must spread across the hash
+    // space. Shift/XOR combinations of raw coordinates yield <=512 hashes.
+    QVERIFY2(hashes.size() > count * 99 / 100,
+             qPrintable(QString("Only %1 distinct hashes for %2 adjacent voxels").arg(hashes.size()).arg(count)));
+    QVERIFY(changedBySeed > count * 99 / 100);
+
+    QHash<MappingVoxelKey, int> values;
+    const MappingVoxelKey a{-1, 2, -3}, b{2, -1, -3}, c{-1, -3, 2};
+    values.insert(a, 10); values.insert(b, 20); values.insert(c, 30);
+    values.insert(MappingVoxelKey{-1, 2, -3}, 40);
+    QCOMPARE(values.size(), 3);
+    QCOMPARE(values.value(a), 40);
+    QCOMPARE(values.value(b), 20);
+    QCOMPARE(values.value(c), 30);
+}
 void MappingClientTest::fragmentedFramesAndOriginReset() {
     QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
     MappingClient client; client.setHost("127.0.0.1"); client.setPort(server.serverPort()); client.setEnabled(true);

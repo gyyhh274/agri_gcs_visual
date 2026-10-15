@@ -14,6 +14,7 @@
 #include <QQuickItemGrabResult>
 #include <QWheelEvent>
 #include <QTouchDevice>
+#include <limits>
 #include "../src/AsyncTileMapItem.h"
 #include "../src/OfflineMapSource.h"
 #include "../src/NestPosition.h"
@@ -209,6 +210,127 @@ private slots:
         QVERIFY(offline->isVisible());
         QVERIFY(!panel->isVisible());
         m_mappingClient.stopDemo();
+    }
+    void expandedMappingKeepsMapAndCamera()
+    {
+        QQmlApplicationEngine engine;
+        auto *window = qobject_cast<QQuickWindow *>(load(engine, 0));
+        QVERIFY(window);
+        auto *task = window->findChild<QQuickItem *>("taskPage");
+        auto *panel = window->findChild<QQuickItem *>("realtimeMapPanel");
+        auto *view = window->findChild<PointCloudView *>("pointCloudView");
+        auto *expand = window->findChild<QObject *>("mappingExpandButton");
+        QVERIFY(task && panel && view && expand);
+        task->setProperty("realtimeMap", true);
+        // Keep automatic first-map fitting out of this camera-preservation test.
+        panel->setProperty("initialViewFitted", true);
+        m_mappingClient.startDemo();
+        m_mappingClient.setPaused(true);
+        QTRY_VERIFY(m_mappingClient.snapshot() && !m_mappingClient.snapshot()->points.isEmpty());
+        const auto snapshot = m_mappingClient.snapshot();
+        const auto *pointData = snapshot->points.constData();
+        const int pointCount = snapshot->points.size();
+        const int pathCount = snapshot->trajectory.size();
+        QVERIFY(pointCount > 100);
+        QVERIFY(pathCount > 0);
+        view->setFollow(false);
+        view->setDistance(18);
+        view->setYaw(23);
+        view->setPitch(37);
+        view->setPointSize(2.2);
+        view->setCutaway(true);
+        QCoreApplication::processEvents();
+        auto *originalParent = panel->parentItem();
+        const QRectF originalGeometry = panel->mapRectToScene(panel->boundingRect());
+        const QSizeF originalViewSize = view->size();
+        QVERIFY(originalParent != task);
+        QVERIFY(!panel->property("expanded").toBool());
+
+        for (int round = 0; round < 2; ++round) {
+            QVERIFY(QMetaObject::invokeMethod(expand, "clicked"));
+            QTRY_VERIFY(panel->property("expanded").toBool());
+            QCOMPARE(panel->parentItem(), task);
+            QTRY_COMPARE(panel->size(), task->size());
+            QTRY_VERIFY(std::abs(panel->mapRectToScene(panel->boundingRect()).width()-window->width()) < 1);
+            QCOMPARE(panel->mapRectToScene(panel->boundingRect()), task->mapRectToScene(task->boundingRect()));
+            QVERIFY(view->height() > originalViewSize.height());
+            QCOMPARE(view->width(), panel->width());
+            QCOMPARE(window->findChild<PointCloudView *>("pointCloudView"), view);
+            QCOMPARE(view->source(), &m_mappingClient);
+            // Resizing the window while expanded must keep the map anchored.
+            window->resize(round == 0 ? QSize(1280, 800) : QSize(1920, 1080));
+            QCoreApplication::processEvents();
+            QCOMPARE(panel->mapRectToScene(panel->boundingRect()), task->mapRectToScene(task->boundingRect()));
+            if (round == 0)
+                QVERIFY(QMetaObject::invokeMethod(expand, "clicked"));
+            else
+                QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(!panel->property("expanded").toBool());
+            QCOMPARE(panel->parentItem(), originalParent);
+            QCOMPARE(view->size(), originalViewSize);
+            QCOMPARE(window->findChild<PointCloudView *>("pointCloudView"), view);
+            QCOMPARE(view->source(), &m_mappingClient);
+            QCOMPARE(m_mappingClient.snapshot()->points.constData(), pointData);
+            QCOMPARE(m_mappingClient.pointCount(), pointCount);
+            QCOMPARE(m_mappingClient.trajectoryCount(), pathCount);
+            QVERIFY(m_mappingClient.paused());
+            QVERIFY(!view->follow());
+            QCOMPARE(view->distance(), qreal(18));
+            QCOMPARE(view->yaw(), qreal(23));
+            QCOMPARE(view->pitch(), qreal(37));
+            QCOMPARE(view->pointSize(), qreal(2.2));
+            QVERIFY(view->cutaway());
+        }
+        // The design stage scales with the window, so restore its initial size
+        // before comparing the collapsed map's scene coordinates.
+        window->resize(1536, 1024);
+        QCoreApplication::processEvents();
+        QCOMPARE(panel->mapRectToScene(panel->boundingRect()), originalGeometry);
+        m_mappingClient.stopDemo();
+    }
+    void mappingFocusAndPointSize()
+    {
+        PointCloudView view;
+        view.setSize(QSizeF(800, 500));
+        view.setSource(&m_mappingClient);
+        view.setPointSize(-100);
+        QCOMPARE(view.pointSize(), qreal(.8));
+        view.setPointSize(100);
+        QCOMPARE(view.pointSize(), qreal(4));
+        view.setPointSize(2.2);
+        view.setPointSize(std::numeric_limits<qreal>::quiet_NaN());
+        view.setPointSize(std::numeric_limits<qreal>::infinity());
+        QCOMPARE(view.pointSize(), qreal(2.2));
+
+        m_mappingClient.startDemo();
+        m_mappingClient.setPaused(true);
+        QTRY_VERIFY(m_mappingClient.snapshot() && m_mappingClient.snapshot()->hasPose);
+        view.setFollow(false);
+        view.setDistance(80);
+        view.setYaw(15);
+        view.setPitch(35);
+        view.focusVehicle();
+        QVERIFY(view.follow());
+        QCOMPARE(view.distance(), qreal(12));
+        QCOMPARE(view.yaw(), qreal(15));
+        QCOMPARE(view.pitch(), qreal(35));
+        view.setDistance(5);
+        view.focusVehicle();
+        QCOMPARE(view.distance(), qreal(5));
+        view.pan(10, 5);
+        QVERIFY(!view.follow());
+        QCOMPARE(view.distance(), qreal(5));
+        QCOMPARE(view.pointSize(), qreal(2.2));
+
+        // With retained points but no current pose, focus falls back to a map
+        // fit and must not leave the camera following a stale aircraft marker.
+        m_mappingClient.stopDemo();
+        QTRY_VERIFY(m_mappingClient.snapshot() && !m_mappingClient.snapshot()->hasPose);
+        view.setFollow(true);
+        view.focusVehicle();
+        QVERIFY(!view.follow());
+        QVERIFY(std::isfinite(view.distance()));
+        QVERIFY(view.distance() >= 3);
     }
     void pages_data()
     {

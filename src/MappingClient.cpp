@@ -14,12 +14,12 @@
 #include <cstring>
 
 namespace {
-constexpr int MaxPoints = 250000;
+constexpr int MaxPoints = 1500000;
 constexpr int MaxHeader = 16384;
-constexpr int MaxPayload = 8 * 1024 * 1024;
+constexpr int MaxPayload = 32 * 1024 * 1024;
 constexpr int MaxBuffer = MaxPayload + MaxHeader + 12;
 constexpr int CloudBudget = 8000;
-constexpr float VoxelSize = 0.15f;
+constexpr float VoxelSize = 0.025f;
 float readFloat(const char *p) {
     quint32 bits = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(p));
     float value; std::memcpy(&value, &bits, sizeof(value)); return value;
@@ -30,6 +30,9 @@ bool finiteNumber(const QJsonValue &v, double limit = 1e6) {
 }
 
 MappingClient::MappingClient(QObject *parent) : QObject(parent) {
+    bool validLimit = false;
+    const int configuredLimit = qEnvironmentVariableIntValue("AGRI_GCS_MAP_MAX_POINTS", &validLimit);
+    m_maxPoints = validLimit ? qBound(1000, configuredLimit, MaxPoints) : MaxPoints;
     QSettings settings;
     m_host = settings.value("RealtimeMapping/host", "127.0.0.1").toString();
     m_port = settings.value("RealtimeMapping/port", 37262).toInt();
@@ -186,13 +189,13 @@ void MappingClient::insertPoint(const MapPoint &point) {
     const auto it = m_voxels.constFind(key);
     if (it != m_voxels.cend()) { m_points[it.value()] = point; return; }
     int index;
-    if (m_points.size() < MaxPoints) {
+    if (m_points.size() < m_maxPoints) {
         index = m_points.size(); m_points.append(point);
     } else {
         index = m_nextEviction;
         m_voxels.remove(voxelKey(m_points.at(index)));
         m_points[index] = point;
-        m_nextEviction = (m_nextEviction + 1) % MaxPoints;
+        m_nextEviction = (m_nextEviction + 1) % m_maxPoints;
     }
     m_voxels.insert(key, index);
 }

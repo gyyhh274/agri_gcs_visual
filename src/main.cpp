@@ -78,7 +78,7 @@ int main(int argc, char *argv[])
     }
     QGuiApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("无人机地面站"));
-    app.setApplicationVersion(QStringLiteral("1.5.0"));
+    app.setApplicationVersion(QStringLiteral("1.6.0"));
     app.setOrganizationName(QStringLiteral("Agri GCS"));
 
     QCommandLineParser parser;
@@ -104,6 +104,8 @@ int main(int argc, char *argv[])
     parser.addOption({QStringLiteral("realtime-map"), QStringLiteral("Open the realtime point cloud map.")});
     parser.addOption({QStringLiteral("offline-map"), QStringLiteral("Open the offline satellite map.")});
     parser.addOption({QStringLiteral("mapping-demo"), QStringLiteral("Show explicitly labeled synthetic mapping data (no aircraft connection).")});
+    parser.addOption({QStringLiteral("mapping-cutaway"), QStringLiteral("Start the indoor cutaway view, hiding upper surfaces for inspection.")});
+    parser.addOption({QStringLiteral("mapping-expanded"), QStringLiteral("Open the point cloud in the expanded map view.")});
     parser.addOption({QStringLiteral("mapping-host"), QStringLiteral("Mapping bridge host or local SSH tunnel endpoint."), QStringLiteral("host")});
     parser.addOption({QStringLiteral("mapping-port"), QStringLiteral("Mapping bridge TCP port."), QStringLiteral("port")});
     parser.addOption({QStringLiteral("tiles"), QStringLiteral("Offline z/x/y tile directory (no network fallback)."), QStringLiteral("directory")});
@@ -215,6 +217,8 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("relayDiscovery", &relayDiscovery);
     engine.rootContext()->setContextProperty("mappingClient", &mappingClient);
     engine.rootContext()->setContextProperty("initialRealtimeMap", !parser.isSet(QStringLiteral("offline-map")));
+    engine.rootContext()->setContextProperty("initialMappingCutaway", parser.isSet(QStringLiteral("mapping-cutaway")));
+    engine.rootContext()->setContextProperty("initialMappingExpanded", parser.isSet(QStringLiteral("mapping-expanded")));
     engine.rootContext()->setContextProperty(
         "initialTab", parser.value(QStringLiteral("start-tab")).toInt());
     engine.rootContext()->setContextProperty(

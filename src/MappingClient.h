@@ -14,8 +14,18 @@ struct MappingVoxelKey {
     qint32 x, y, z;
     bool operator==(const MappingVoxelKey &o) const { return x == o.x && y == o.y && z == o.z; }
 };
-inline uint qHash(const MappingVoxelKey &key, uint seed = 0) {
-    return qHash(key.x, seed) ^ (qHash(key.y, seed + 0x9e3779b9U) << 1) ^ (qHash(key.z, seed + 0x85ebca6bU) << 2);
+inline uint qHash(const MappingVoxelKey &key, uint seed = 0) noexcept {
+    // Nearby integer voxels need avalanche mixing. XORing shifted Qt integer
+    // hashes puts a room-sized dense cloud into only a few hundred buckets.
+    const auto mix = [](quint64 value) {
+        value += Q_UINT64_C(0x9e3779b97f4a7c15);
+        value = (value ^ (value >> 30)) * Q_UINT64_C(0xbf58476d1ce4e5b9);
+        value = (value ^ (value >> 27)) * Q_UINT64_C(0x94d049bb133111eb);
+        return value ^ (value >> 31);
+    };
+    const quint64 xy = quint64(quint32(key.x)) | (quint64(quint32(key.y)) << 32);
+    const quint64 hash = mix(mix(xy) ^ quint64(quint32(key.z)) ^ (quint64(seed) << 32));
+    return uint(hash ^ (hash >> 32));
 }
 
 class MappingClient : public QObject {
@@ -94,6 +104,7 @@ private:
     QElapsedTimer m_clock;
     QString m_host, m_status, m_session, m_frameId, m_lastExportPath;
     int m_port = 37262;
+    int m_maxPoints = 1500000;
     bool m_connected = false, m_enabled = false, m_demo = false, m_stale = true;
     bool m_paused = false, m_dirty = true, m_poseFresh = false, m_exporting = false;
     bool m_haveSequence = false;

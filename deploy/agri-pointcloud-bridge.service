@@ -16,8 +16,9 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 Environment=ROS_LOG_DIR=/tmp/agri-pointcloud-ros
-MemoryMax=384M
-CPUQuota=60%
+MemoryMax=1536M
+CPUQuota=100%
+Nice=5
 
 [Install]
 WantedBy=multi-user.target

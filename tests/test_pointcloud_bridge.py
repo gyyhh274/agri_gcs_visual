@@ -245,5 +245,38 @@ class CloudSamplingTests(unittest.TestCase):
         self.assertEqual(list(bridge.sampled_cloud(msg)), [])
 
 
+class DenseAlignmentTests(unittest.TestCase):
+    @staticmethod
+    def message(stamp=1.0, frame='body'):
+        msg = CloudSamplingTests.message(1, 1, struct.pack('<ffff', 1, 0, 0, 80))
+        msg.header = SimpleNamespace(frame_id=frame, stamp=SimpleNamespace(to_sec=lambda: stamp))
+        return msg
+
+    def test_rotation_translation_and_exact_time_pose(self):
+        aligner = bridge.BodyCloudAligner()
+        # A later pose must not replace the matching pose for an earlier scan.
+        aligner.add_pose(1, 'world', 'body', (10, 20, 30), (0, 0, math.sqrt(.5), math.sqrt(.5)))
+        aligner.add_pose(1.1, 'world', 'body', (99, 99, 99), (0, 0, 0, 1))
+        points, frame = aligner.transform(self.message())
+        self.assertEqual(frame, 'world')
+        point = next(points)
+        for actual, expected in zip(point, (10, 21, 30, 80)):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_requires_matching_body_frame_and_recent_pose(self):
+        aligner = bridge.BodyCloudAligner()
+        self.assertIsNone(aligner.transform(self.message()))
+        aligner.add_pose(1, 'world', 'body', (0, 0, 0), (0, 0, 0, 1))
+        self.assertIsNone(aligner.transform(self.message(1.1)))
+        self.assertIsNone(aligner.transform(self.message(frame='lidar')))
+        aligner.clear()
+        self.assertIsNone(aligner.transform(self.message()))
+
+    def test_fine_map_preserves_points_separated_by_five_centimeters(self):
+        core = bridge.MapBridge()
+        core.publish_cloud([(0.01, 0, 0, 1), (0.06, 0, 0, 2)], 1)
+        self.assertEqual(len(core.points), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

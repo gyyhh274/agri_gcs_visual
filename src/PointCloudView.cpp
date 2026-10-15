@@ -1,5 +1,9 @@
 #include "PointCloudView.h"
 #include "MappingClient.h"
+#include "PointCloudGpuItem.h"
+#include "PointCloudGeometry.h"
+#include <QGuiApplication>
+#include <QQuickWindow>
 
 #include <QLineF>
 #include <QMutexLocker>
@@ -22,9 +26,14 @@ bool finite(const QVector3D& p)
 QColor pointColor(int index)
 {
     const qreal t = index / qreal(colorCount - 1);
-    if (t < .5)
-        return QColor::fromRgbF(.12 + .05 * t, .35 + 1.1 * t, .98 - .25 * t);
-    return QColor::fromRgbF(.15 + .45 * (t - .5), .9, .85 - 1.25 * (t - .5));
+    const QColor low = QColor::fromRgbF(.015, .14, .48);
+    const QColor mid = QColor::fromRgbF(.025, .49, .94);
+    const QColor high = QColor::fromRgbF(.025, .90, .79);
+    const QColor a = t < .6 ? low : mid, b = t < .6 ? mid : high;
+    const qreal f = t < .6 ? t/.6 : (t-.6)/.4;
+    return QColor::fromRgbF(a.redF()+(b.redF()-a.redF())*f,
+                            a.greenF()+(b.greenF()-a.greenF())*f,
+                            a.blueF()+(b.blueF()-a.blueF())*f);
 }
 struct Camera {
     QVector3D position, right, up, forward;
@@ -120,6 +129,21 @@ PointCloudView::PointCloudView(QQuickItem* parent)
     setMipmap(false);
     setFillColor(QColor(QStringLiteral("#071522")));
     setClip(true);
+    m_followTimer.setInterval(16);
+    connect(&m_followTimer, &QTimer::timeout, this, [this] {
+        const auto view = state();
+        if (!view.follow || !view.snapshot || !view.snapshot->hasPose) { m_followTimer.stop(); return; }
+        const auto delta = view.snapshot->position - view.target;
+        if (delta.lengthSquared() < .000001f) { m_followTimer.stop(); return; }
+        { QMutexLocker lock(&m_mutex); m_state.target += delta * .14f; }
+        viewChanged();
+    });
+    if (QGuiApplication::platformName() != QStringLiteral("offscreen")
+            && QQuickWindow::sceneGraphBackend() != QStringLiteral("software")
+            && qgetenv("QT_QUICK_BACKEND") != "software") {
+        m_gpu = new PointCloudGpuItem(this);
+        m_gpuActive = true;
+    }
 }
 PointCloudView::~PointCloudView() = default;
 PointCloudView::State PointCloudView::state() const { QMutexLocker lock(&m_mutex); return m_state; }
@@ -145,11 +169,47 @@ void PointCloudView::refreshSnapshot()
 {
     const auto snapshot = m_source ? m_source->snapshot() : std::shared_ptr<const MappingSnapshot>();
     { QMutexLocker lock(&m_mutex); m_state.snapshot = snapshot; ++m_state.revision; }
+    if (snapshot && snapshot->hasPose && follow() && !m_followTimer.isActive()) m_followTimer.start();
     update();
+    if (m_gpu) m_gpu->update();
 }
 void PointCloudView::viewChanged()
 {
     { QMutexLocker lock(&m_mutex); ++m_state.revision; }
+    update();
+    if (m_gpu) m_gpu->update();
+    emit changed();
+}
+bool PointCloudView::depthShading() const { return state().depthShading; }
+bool PointCloudView::glow() const { return state().glow; }
+qreal PointCloudView::pointSize() const { return state().pointSize; }
+void PointCloudView::setGlow(bool enabled) {
+    if (glow() == enabled) return;
+    { QMutexLocker lock(&m_mutex); m_state.glow = enabled; }
+    viewChanged();
+}
+void PointCloudView::setPointSize(qreal value) {
+    if (!std::isfinite(value)) return;
+    value = std::clamp(value, .8, 4.0);
+    if (qFuzzyCompare(value, pointSize())) return;
+    { QMutexLocker lock(&m_mutex); m_state.pointSize = value; }
+    viewChanged();
+}
+bool PointCloudView::cutaway() const { return state().cutaway; }
+void PointCloudView::setCutaway(bool value) {
+    if (cutaway() == value) return;
+    { QMutexLocker lock(&m_mutex); m_state.cutaway = value; }
+    viewChanged();
+}
+void PointCloudView::setDepthShading(bool value) {
+    if (depthShading() == value) return;
+    { QMutexLocker lock(&m_mutex); m_state.depthShading = value; }
+    viewChanged();
+}
+void PointCloudView::disableGpu() {
+    if (!m_gpuActive) return;
+    m_gpuActive = false;
+    if (m_gpu) m_gpu->setVisible(false);
     update();
     emit changed();
 }
@@ -163,9 +223,8 @@ void PointCloudView::setFollow(bool enabled)
 {
     if (follow() == enabled) return;
     { QMutexLocker lock(&m_mutex);
-      if (!enabled && m_state.snapshot && m_state.snapshot->hasPose)
-          m_state.target = m_state.snapshot->position;
       m_state.follow = enabled; }
+    if (enabled) m_followTimer.start();
     viewChanged();
 }
 void PointCloudView::setTopDown(bool enabled)
@@ -218,8 +277,6 @@ void PointCloudView::pan(qreal dx, qreal dy)
 {
     if (!std::isfinite(dx) || !std::isfinite(dy) || height() < 1) return;
     { QMutexLocker lock(&m_mutex);
-      if (m_state.follow && m_state.snapshot && m_state.snapshot->hasPose)
-          m_state.target = m_state.snapshot->position;
       m_state.follow = false;
       const qreal y = m_state.yaw * pi / 180.0;
       const qreal scale = 2 * m_state.distance * std::tan(halfFov) / height();
@@ -240,6 +297,16 @@ void PointCloudView::resetView()
       m_state = State(); m_state.snapshot = snapshot; m_state.revision = revision; }
     viewChanged();
 }
+void PointCloudView::focusVehicle()
+{
+    const auto view = state();
+    if (!view.snapshot || !view.snapshot->hasPose) { fitMap(); return; }
+    { QMutexLocker lock(&m_mutex);
+      m_state.target = view.snapshot->position;
+      m_state.follow = true;
+      m_state.distance = std::min(m_state.distance, 12.0); }
+    viewChanged();
+}
 void PointCloudView::fitMap()
 {
     const auto snapshot = state().snapshot;
@@ -254,33 +321,51 @@ void PointCloudView::fitMap()
             high[axis] = std::max(high[axis], point[axis]);
         }
     };
-    for (const auto& p : snapshot->points) include(QVector3D(p.x, p.y, p.z));
+    // Fit the central 98% of samples so isolated range returns do not make
+    // the useful room occupy only a few pixels. All points remain rendered.
+    const auto bounds = cloudBounds(snapshot->points);
+    if (bounds.valid) { low = bounds.low; high = bounds.high; any = true; }
+    const auto current = state();
+    if (current.cutaway && any) high.setZ(low.z()+(high.z()-low.z())*.65f);
     for (const auto& p : snapshot->trajectory) include(p);
     if (snapshot->hasPose) include(snapshot->position);
     if (!any) { resetView(); return; }
     const qreal aspect = std::max(.2, width() / std::max(1.0, height()));
-    const qreal angle = std::atan(std::tan(halfFov) * std::min(1.0, aspect));
+    const auto view = state();
+    const QVector3D center = (low + high) * .5;
+    const Camera camera(center, 1, view.yaw, view.topDown ? 89.5 : view.pitch, QSizeF(width(), height()));
+    qreal fittedDistance = 0;
+    for (int corner = 0; corner < 8; ++corner) {
+        const QVector3D delta((corner&1 ? high.x() : low.x())-center.x(),
+                              (corner&2 ? high.y() : low.y())-center.y(),
+                              (corner&4 ? high.z() : low.z())-center.z());
+        const qreal depth = QVector3D::dotProduct(delta, camera.forward);
+        fittedDistance = std::max(fittedDistance,
+            std::max(std::abs(QVector3D::dotProduct(delta, camera.right))/(std::tan(halfFov)*aspect),
+                     std::abs(QVector3D::dotProduct(delta, camera.up))/std::tan(halfFov))*1.1-depth);
+    }
     { QMutexLocker lock(&m_mutex);
       m_state.target = (low + high) * .5;
       m_state.follow = false;
-      m_state.distance = std::clamp(qreal((high - low).length()) * .6 / std::sin(angle), 3.0, 20000.0); }
+      m_state.distance = std::clamp(fittedDistance, 3.0, 20000.0); }
     viewChanged();
 }
 void PointCloudView::geometryChanged(const QRectF& next, const QRectF& previous)
 {
     QQuickPaintedItem::geometryChanged(next, previous);
+    if (m_gpu) m_gpu->setSize(next.size());
     if (next.size() != previous.size()) update();
 }
 
 void PointCloudView::paint(QPainter* painter)
 {
+    if (m_gpuActive) { painter->fillRect(boundingRect(), QColor("#071522")); return; }
     const auto view = state();
     const QSizeF viewport(width(), height());
     if (viewport.width() < 1 || viewport.height() < 1) return;
     auto& cache = *m_cache;
     const auto snapshot = view.snapshot;
     QVector3D target = view.target;
-    if (view.follow && snapshot && snapshot->hasPose && finite(snapshot->position)) target = snapshot->position;
     const Camera camera(target, view.distance, view.yaw, view.topDown ? 89.5 : view.pitch, viewport);
     if (cache.revision != view.revision || cache.size != viewport) {
         cache.revision = view.revision;
@@ -290,21 +375,18 @@ void PointCloudView::paint(QPainter* painter)
         cache.aircraft.clear(); cache.hasAircraft = false;
         qreal low = 0, high = 1;
         if (snapshot && !snapshot->points.isEmpty()) {
-            low = std::numeric_limits<qreal>::max();
-            high = std::numeric_limits<qreal>::lowest();
-            for (const auto& p : snapshot->points) {
-                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
-                low = std::min(low, qreal(p.z)); high = std::max(high, qreal(p.z));
-            }
-            if (low > high) { low = 0; high = 1; }
-            const qreal range = std::max(.25, high - low);
+            const auto bounds = cloudBounds(snapshot->points);
+            if (bounds.valid) { low = bounds.low.z(); high = bounds.high.z(); }
+            const qreal clipZ = view.cutaway ? low + (high-low)*.65 : 1.0e7;
+            const qreal range = std::max(.25, (view.cutaway ? clipZ : high) - low);
             const int stride = std::max(1, (snapshot->points.size() + pointBudget - 1) / pointBudget);
             for (int index = 0; index < snapshot->points.size(); index += stride) {
                 const auto& p = snapshot->points[index];
+                if (p.z > clipZ) continue;
                 QPointF screen;
                 if (!camera.project(QVector3D(p.x, p.y, p.z), screen)) continue;
                 const qreal value = view.colorMode == 1
-                    ? (std::isfinite(p.intensity) ? p.intensity / 255.0 : 0.0) : (p.z - low) / range;
+                    ? (std::isfinite(p.intensity) ? p.intensity / 150.0 : 0.0) : (p.z - low) / range;
                 const int color = std::clamp(int(value * (colorCount - 1)), 0, colorCount - 1);
                 cache.points[color].append(screen);
             }
@@ -360,25 +442,25 @@ void PointCloudView::paint(QPainter* painter)
     painter->setClipRect(QRectF(QPointF(0, 0), viewport));
     painter->setRenderHint(QPainter::Antialiasing, false);
     painter->setPen(QPen(QColor(QStringLiteral("#142a37")), 1));
-    if (!cache.grid.isEmpty()) painter->drawLines(cache.grid.constData(), cache.grid.size());
+    if ((!snapshot || snapshot->points.isEmpty()) && !cache.grid.isEmpty()) painter->drawLines(cache.grid.constData(), cache.grid.size());
     painter->setPen(QPen(QColor(QStringLiteral("#203e4b")), 1));
-    if (!cache.majorGrid.isEmpty()) painter->drawLines(cache.majorGrid.constData(), cache.majorGrid.size());
+    if ((!snapshot || snapshot->points.isEmpty()) && !cache.majorGrid.isEmpty()) painter->drawLines(cache.majorGrid.constData(), cache.majorGrid.size());
     for (int color = 0; color < colorCount; ++color) {
         const auto& points = cache.points[color];
         if (points.isEmpty()) continue;
-        QPen pen(pointColor(color), 1.8, Qt::SolidLine, Qt::SquareCap);
+        QPen pen(pointColor(color), view.pointSize, Qt::SolidLine, Qt::RoundCap);
         painter->setPen(pen);
         painter->drawPoints(points.constData(), points.size());
     }
     painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setPen(QPen(QColor(QStringLiteral("#f5cf6d")), 2));
+    painter->setPen(QPen(QColor(QStringLiteral("#e0f0fa")), 1.5));
     if (!cache.trajectory.isEmpty()) painter->drawLines(cache.trajectory.constData(), cache.trajectory.size());
     if (cache.hasAircraft) {
         painter->setBrush(QColor(13, 233, 225, 30));
         painter->setPen(QPen(QColor(QStringLiteral("#1be0d5")), 1));
         painter->drawEllipse(cache.aircraftCenter, 20, 20);
-        painter->setBrush(QColor(QStringLiteral("#d9ffff")));
-        painter->setPen(QPen(QColor(QStringLiteral("#0adacc")), 2));
+        painter->setBrush(QColor(QStringLiteral("#ff4934")));
+        painter->setPen(QPen(QColor(QStringLiteral("#ff4934")), 2));
         painter->drawPolygon(cache.aircraft);
     }
     const std::array<QColor, 3> axisColors = { QColor("#ef8080"), QColor("#70d99c"), QColor("#6bb8ff") };

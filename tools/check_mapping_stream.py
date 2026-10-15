@@ -35,7 +35,7 @@ def main():
                     magic, header_bytes, payload_bytes = struct.unpack("<4sII", receive_exact(connection, 12))
                 except socket.timeout:
                     break
-                if magic != b"AGM1" or not 0 < header_bytes <= 16384 or payload_bytes > 8 * 1024 * 1024:
+                if magic != b"AGM1" or not 0 < header_bytes <= 16384 or payload_bytes > 32 * 1024 * 1024:
                     raise ValueError("invalid mapping frame limits")
                 header = json.loads(receive_exact(connection, header_bytes).decode("utf-8"))
                 receive_exact(connection, payload_bytes)

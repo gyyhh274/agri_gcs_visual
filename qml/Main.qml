@@ -29,6 +29,7 @@ ApplicationWindow {
     property bool previewMode: false
     property bool overviewSettings: false
     property real designScale: Math.min(width / 1536, height / 1024)
+    readonly property bool mapExpanded: pageIndex === 0 && pageLoader.item && pageLoader.item.mapExpanded === true
 
     // 自动发现到机载电脑后直接采用该地址：
     // 视频（pipelineRevision 变化）与云台/照片（relayHost 派生）都会跟着切
@@ -56,8 +57,8 @@ ApplicationWindow {
 
     Item {
         id: stage
-        width: 1536
-        height: 1024
+        width: window.mapExpanded ? window.width / window.designScale : 1536
+        height: window.mapExpanded ? window.height / window.designScale : 1024
         scale: window.designScale
         transformOrigin: Item.TopLeft
         x: (window.width - width * scale) / 2
@@ -180,6 +181,7 @@ ApplicationWindow {
             }
 
             Loader {
+                id: pageLoader
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: header.bottom

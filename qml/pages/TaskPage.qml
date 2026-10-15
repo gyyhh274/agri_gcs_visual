@@ -23,6 +23,7 @@ Item {
     property int photoPage: 0
     property int inspectedPhoto: 0
     property bool realtimeMap: typeof initialRealtimeMap !== "undefined" ? initialRealtimeMap : true
+    property alias mapExpanded: liveMap.expanded
     signal requestSettings()
     Settings { id: routeStore; category: "MissionDemo" }
 
@@ -341,7 +342,14 @@ Item {
                     onClearRequested: clearRouteDialog.open()
                 }
                 RealtimeMapPanel {
-                    anchors.fill: map
+                    id: liveMap
+                    parent: expanded ? page : map.parent
+                    x: expanded ? 0 : map.x
+                    y: expanded ? 0 : map.y
+                    width: expanded ? page.width : map.width
+                    height: expanded ? page.height : map.height
+                    z: expanded ? 100 : 1
+                    expanded: typeof initialMappingExpanded !== "undefined" && initialMappingExpanded
                     visible: page.realtimeMap
                     onNotified: page.actionMessage(message)
                 }
