@@ -413,7 +413,9 @@ Item {
                         width: 106; height: 106
                         readonly property real throwRadius: 34
                         readonly property real knobRadius: 13
-                        readonly property real deadZone: 0.10      // 中心死区，避免手抖
+                        readonly property real deadZone: 0.06      // 中心死区，避免手抖
+                                                                   // （原 0.10：小幅度推杆
+                                                                   //   直接归零，手感"推了不动"）
                         property real nx: 0                        // -1..1，右为正
                         property real ny: 0                        // -1..1，上为正
                         property bool dragging: false
@@ -498,9 +500,11 @@ Item {
                             onReleased: joy.release()
                             onCanceled: joy.release()
                         }
-                        // 持续上报杆量（20Hz）：相机不会自己保持，需要流式下发
+                        // 持续上报杆量（30Hz）：相机不会自己保持，需要流式下发。
+                        // 杆量【变化】时 apply() 已经立即下发，这个定时器只做保活，
+                        // 所以间隔不必太短；原来 50ms 在松手/静止时也无所谓。
                         Timer {
-                            interval: 50; repeat: true; running: joy.dragging
+                            interval: 33; repeat: true; running: joy.dragging
                             onTriggered: gimbalLink.setRotateRate(joy.yawRate, joy.pitchRate)
                         }
                         // 安全兜底 1：丢过鼠标抬起事件时强制回中（按 Qt 的真实按键状态判断）
