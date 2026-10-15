@@ -1,0 +1,23 @@
+[Unit]
+Description=Agri GCS read-only ROS point cloud bridge
+After=network.target
+
+[Service]
+Type=simple
+User=ly
+Environment=ROS_MASTER_URI=http://127.0.0.1:11311
+Environment=ROS_IP=127.0.0.1
+Environment=PYTHONPATH=/opt/ros/noetic/lib/python3/dist-packages
+ExecStart=/usr/bin/python3 -u /home/ly/.local/lib/agri-gcs/pointcloud_bridge.py --bind 127.0.0.1 --port 37262
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+Environment=ROS_LOG_DIR=/tmp/agri-pointcloud-ros
+MemoryMax=384M
+CPUQuota=60%
+
+[Install]
+WantedBy=multi-user.target

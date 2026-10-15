@@ -4,4 +4,6 @@ CONFIG -= app_bundle
 TARGET = ui_smoke
 SOURCES += tst_ui.cpp ../src/AsyncTileMapItem.cpp ../src/OfflineMapSource.cpp ../src/NestPosition.cpp ../src/AircraftProfile.cpp ../src/GroundLink.cpp
 HEADERS += ../src/AsyncTileMapItem.h ../src/OfflineMapSource.h ../src/NestPosition.h ../src/AircraftProfile.h ../src/GroundLink.h
+SOURCES += ../src/MappingClient.cpp ../src/PointCloudView.cpp
+HEADERS += ../src/MappingTypes.h ../src/MappingClient.h ../src/PointCloudView.h
 RESOURCES += ../qml.qrc

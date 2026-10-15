@@ -22,6 +22,7 @@ Item {
     property int selectedVideo: 0
     property int photoPage: 0
     property int inspectedPhoto: 0
+    property bool realtimeMap: typeof initialRealtimeMap !== "undefined" ? initialRealtimeMap : true
     signal requestSettings()
     Settings { id: routeStore; category: "MissionDemo" }
 
@@ -315,17 +316,34 @@ Item {
         Item {
             width: 810
             height: parent.height
+                Rectangle {
+                    id: mapModeBar
+                    width: parent.width; height: 34
+                    color: "#071a29"
+                    Row {
+                        spacing: 2
+                        GButton { objectName: "realtimeMapTab"; width: 116; height: 31; pixelSize: 13; text: "实时建图"; checked: page.realtimeMap; fill: page.realtimeMap ? "#0d6685" : "#102d43"; onClicked: page.realtimeMap = true }
+                        GButton { objectName: "offlineMapTab"; width: 116; height: 31; pixelSize: 13; text: "离线地图"; checked: !page.realtimeMap; fill: !page.realtimeMap ? "#0d6685" : "#102d43"; onClicked: page.realtimeMap = false }
+                    }
+                    Text { anchors.right: parent.right; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: page.realtimeMap ? "激光雷达点云 · 本地 world 坐标" : "离线卫星底图 · 航点编辑"; color: "#829fac"; font.pixelSize: 11 }
+                }
                 MapPanel {
                     id: map; objectName: "taskMapPanel"
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: mapModeBar.bottom
                     // Only the lower list changes tabs; keep the map viewport fixed.
-                    height: 450
+                    height: 416
+                    visible: !page.realtimeMap
                     editable: true; waypointModel: waypoints
                     selectedIndex: page.selectedWaypoint; routeRevision: page.routeRevision
                     onWaypointAdded: page.addWaypoint(latitude, longitude)
                     onWaypointMoved: page.moveWaypoint(index, latitude, longitude)
                     onWaypointSelected: page.selectedWaypoint = index
                     onClearRequested: clearRouteDialog.open()
+                }
+                RealtimeMapPanel {
+                    anchors.fill: map
+                    visible: page.realtimeMap
+                    onNotified: page.actionMessage(message)
                 }
 
             GCard {

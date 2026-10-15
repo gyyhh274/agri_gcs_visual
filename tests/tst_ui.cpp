@@ -19,6 +19,96 @@
 #include "../src/NestPosition.h"
 #include "../src/AircraftProfile.h"
 #include "../src/GroundLink.h"
+#include "../src/MappingClient.h"
+#include "../src/PointCloudView.h"
+
+// UI fixtures expose the same QML-facing state without sending device traffic.
+class TestGimbal : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(bool connected MEMBER m_connected CONSTANT)
+    Q_PROPERTY(QString status MEMBER m_status CONSTANT)
+    Q_PROPERTY(QString endpoint MEMBER m_endpoint NOTIFY changed)
+    Q_PROPERTY(double yaw MEMBER m_yaw NOTIFY attitudeChanged)
+    Q_PROPERTY(double pitch MEMBER m_pitch NOTIFY attitudeChanged)
+    Q_PROPERTY(double roll MEMBER m_roll NOTIFY attitudeChanged)
+    Q_PROPERTY(bool attitudeFresh MEMBER m_attitudeFresh CONSTANT)
+    Q_PROPERTY(int mode MEMBER m_mode NOTIFY changed)
+    Q_PROPERTY(QString modeName MEMBER m_modeName CONSTANT)
+    Q_PROPERTY(int recordStatus MEMBER m_recordStatus NOTIFY recordStatusChanged)
+    Q_PROPERTY(QString recordStatusName MEMBER m_recordStatusName CONSTANT)
+    Q_PROPERTY(double zoom MEMBER m_zoom NOTIFY changed)
+    Q_PROPERTY(double zoomMax MEMBER m_zoomMax CONSTANT)
+    Q_PROPERTY(bool busy MEMBER m_busy CONSTANT)
+    Q_PROPERTY(int yawRate MEMBER m_yawRate NOTIFY rotateChanged)
+    Q_PROPERTY(int pitchRate MEMBER m_pitchRate NOTIFY rotateChanged)
+    Q_PROPERTY(bool rotating MEMBER m_rotating NOTIFY rotateChanged)
+    Q_PROPERTY(bool tfCardPresent MEMBER m_tfCardPresent CONSTANT)
+    Q_PROPERTY(QString tfCardText MEMBER m_tfCardText CONSTANT)
+    Q_PROPERTY(QString lastFeedback MEMBER m_lastFeedback CONSTANT)
+    Q_PROPERTY(double yawLimit MEMBER m_yawLimit CONSTANT)
+    Q_PROPERTY(double pitchMin MEMBER m_pitchMin CONSTANT)
+    Q_PROPERTY(double pitchMax MEMBER m_pitchMax CONSTANT)
+public:
+    bool m_connected = false, m_attitudeFresh = false, m_busy = false, m_rotating = false, m_tfCardPresent = true;
+    QString m_status = QStringLiteral("本地 UI 测试设备"), m_endpoint, m_modeName = QStringLiteral("跟随");
+    QString m_recordStatusName = QStringLiteral("未录像"), m_tfCardText = QStringLiteral("本地测试"), m_lastFeedback;
+    double m_yaw = 0, m_pitch = 0, m_roll = 0, m_zoom = 1, m_zoomMax = 6;
+    double m_yawLimit = 135, m_pitchMin = -90, m_pitchMax = 25;
+    int m_mode = 1, m_recordStatus = 0, m_yawRate = 0, m_pitchRate = 0;
+    Q_INVOKABLE void connectToGimbal(const QString& host, int port) { m_endpoint = host + ':' + QString::number(port); emit changed(); }
+    Q_INVOKABLE void stopRotate() { m_yawRate = m_pitchRate = 0; m_rotating = false; emit rotateChanged(); }
+signals:
+    void changed();
+    void attitudeChanged();
+    void rotateChanged();
+    void recordStatusChanged();
+    void notified(const QString& text);
+    void photoSucceeded();
+    void photoFailed(const QString& reason);
+};
+
+class TestMediaLibrary : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(bool busy MEMBER m_busy CONSTANT)
+    Q_PROPERTY(QString status MEMBER m_status CONSTANT)
+    Q_PROPERTY(QVariantList photos MEMBER m_photos NOTIFY photosChanged)
+    Q_PROPERTY(int count READ count NOTIFY photosChanged)
+    Q_PROPERTY(QString endpoint MEMBER m_endpoint NOTIFY changed)
+    Q_PROPERTY(QString downloadingName MEMBER m_downloadingName CONSTANT)
+    Q_PROPERTY(double downloadProgress MEMBER m_downloadProgress CONSTANT)
+    Q_PROPERTY(QString downloadingSizeText MEMBER m_downloadingSizeText CONSTANT)
+public:
+    bool m_busy = false;
+    QString m_status = QStringLiteral("本地 UI 媒体样本"), m_endpoint, m_downloadingName, m_downloadingSizeText;
+    double m_downloadProgress = 0;
+    QVariantList m_photos;
+    int count() const { return m_photos.size(); }
+    Q_INVOKABLE void setEndpoint(const QString& host, int port) { m_endpoint = host + ':' + QString::number(port); emit changed(); }
+    Q_INVOKABLE void refresh() { emit photosChanged(); }
+    Q_INVOKABLE void fetchNewest() { emit photosChanged(); }
+signals:
+    void changed();
+    void photosChanged();
+    void notified(const QString& text);
+};
+
+class TestRelayDiscovery : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(bool scanning MEMBER m_scanning CONSTANT)
+    Q_PROPERTY(QString status MEMBER m_status CONSTANT)
+    Q_PROPERTY(QString foundHost MEMBER m_foundHost CONSTANT)
+    Q_PROPERTY(int progress MEMBER m_progress CONSTANT)
+public:
+    bool m_scanning = false;
+    int m_progress = 0;
+    QString m_status = QStringLiteral("UI 测试不扫描设备"), m_foundHost;
+    Q_INVOKABLE void scan(const QString&) {}
+signals:
+    void found(const QString& host);
+};
 
 class UiSmoke : public QObject
 {
@@ -27,6 +117,11 @@ class UiSmoke : public QObject
     NestPosition m_nest{&m_source};
     AircraftProfile m_aircraft;
     GroundLink m_groundLink;
+    MappingClient m_mappingClient;
+    TestGimbal m_gimbal;
+    TestMediaLibrary m_photos, m_videos;
+    TestRelayDiscovery m_discovery;
+    QTemporaryDir m_mediaDirectory;
 
     QObject *load(QQmlApplicationEngine &engine, int page, int tab = 0, int section = 0)
     {
@@ -34,6 +129,15 @@ class UiSmoke : public QObject
         engine.rootContext()->setContextProperty("nestPosition", &m_nest);
         engine.rootContext()->setContextProperty("aircraftProfile", &m_aircraft);
         engine.rootContext()->setContextProperty("groundLink", &m_groundLink);
+        engine.rootContext()->setContextProperty("mappingClient", &m_mappingClient);
+        engine.rootContext()->setContextProperty("gimbalLink", &m_gimbal);
+        engine.rootContext()->setContextProperty("photoLibrary", &m_photos);
+        engine.rootContext()->setContextProperty("videoLibrary", &m_videos);
+        engine.rootContext()->setContextProperty("relayDiscovery", &m_discovery);
+        engine.rootContext()->setContextProperty("initialPage", page);
+        engine.rootContext()->setContextProperty("initialTab", tab);
+        engine.rootContext()->setContextProperty("initialSection", section);
+        engine.rootContext()->setContextProperty("initialRealtimeMap", false);
         engine.setInitialProperties({{"pageIndex", page}, {"previewTab", tab},
                                      {"previewSection", section}, {"previewMode", true}});
         engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
@@ -51,14 +155,60 @@ class UiSmoke : public QObject
 
 private slots:
     void init() {
+        QVERIFY(m_mediaDirectory.isValid());
+        const QString imagePath = m_mediaDirectory.filePath("ui-media-fixture.png");
+        QImage fixture(240, 152, QImage::Format_RGB32);
+        fixture.fill(QColor("#238a61"));
+        QVERIFY(fixture.save(imagePath));
+        m_photos.m_photos.clear();
+        for (int i = 0; i < 16; ++i)
+            m_photos.m_photos.append(QVariantMap{{"name", QString("TEST_%1.png").arg(i, 3, 10, QLatin1Char('0'))},
+                {"ready", true}, {"localPath", QUrl::fromLocalFile(imagePath).toString()}, {"sizeKB", 12}});
         QSettings settings;
         settings.remove("MissionDemo");
         settings.remove("OfflineMap");
         settings.remove("GroundStationUi");
+        settings.setValue("VideoStream/enabled", false);
         settings.sync();
         m_source.configure("", false, false);
         m_nest.resetDemo();
         m_aircraft.reload();
+        m_mappingClient.stopDemo();
+        m_mappingClient.setEnabled(false);
+        m_mappingClient.setPaused(false);
+        m_mappingClient.clearMap();
+    }
+    void realtimeMappingPanel()
+    {
+        QQmlApplicationEngine engine;
+        auto *root = load(engine, 0);
+        QVERIFY(root);
+        auto *task = root->findChild<QObject *>("taskPage");
+        auto *offline = root->findChild<QQuickItem *>("taskMapPanel");
+        auto *panel = root->findChild<QQuickItem *>("realtimeMapPanel");
+        auto *view = root->findChild<PointCloudView *>("pointCloudView");
+        QVERIFY(task && offline && panel && view);
+        QVERIFY(!panel->isVisible());
+        task->setProperty("realtimeMap", true);
+        QVERIFY(panel->isVisible());
+        QVERIFY(!offline->isVisible());
+        QCOMPARE(view->source(), &m_mappingClient);
+        m_mappingClient.startDemo();
+        QTRY_VERIFY(m_mappingClient.pointCount() > 100);
+        QTRY_VERIFY(m_mappingClient.hasPose());
+        QVERIFY(m_mappingClient.demo());
+        const auto *topButton = root->findChild<QObject *>("mappingTopButton");
+        QVERIFY(topButton);
+        QVERIFY(QMetaObject::invokeMethod(const_cast<QObject *>(topButton), "clicked"));
+        QVERIFY(view->property("topDown").toBool());
+        const auto before = m_mappingClient.pointCount();
+        task->setProperty("contentTab", 2);
+        QVERIFY(view == root->findChild<PointCloudView *>("pointCloudView"));
+        QVERIFY(m_mappingClient.pointCount() >= before);
+        task->setProperty("realtimeMap", false);
+        QVERIFY(offline->isVisible());
+        QVERIFY(!panel->isVisible());
+        m_mappingClient.stopDemo();
     }
     void pages_data()
     {
@@ -272,14 +422,17 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(map->cacheTileCount() > 0, 5000);
         panel->setProperty("editMode", 1);
         auto scene = [panel](int x, int y) { return panel->mapToScene(QPointF(x,y)).toPoint(); };
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, scene(450,225));
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, scene(490,250));
+        // Keep the click on the latitude of the map center, clear of the
+        // clickable demo nest marker that occupies the exact center.
+        const QPoint center = panel->boundingRect().center().toPoint() + QPoint(90, 0);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, scene(center.x(),center.y()));
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, scene(center.x()+40,center.y()+25));
         QCOMPARE(evaluate(task, "JSON.parse(routeJson()).length").toInt(), 2);
         const double latitude = evaluate(task, "Number(JSON.parse(routeJson())[0].lat)").toDouble();
         QVERIFY(std::abs(latitude - centerLat) < 0.0000002);
-        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, scene(450,225));
-        QTest::mouseMove(window, scene(480,190), 20);
-        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, scene(480,190));
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, scene(center.x(),center.y()));
+        QTest::mouseMove(window, scene(center.x()+30,center.y()-35), 20);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, scene(center.x()+30,center.y()-35));
         QVERIFY(evaluate(task, "Number(JSON.parse(routeJson())[0].lat)").toDouble() > latitude);
         QCOMPARE(task->property("selectedWaypoint").toInt(), 0);
         const QGeoCoordinate before = map->center();
@@ -288,12 +441,13 @@ private slots:
         QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, scene(600,280));
         QVERIFY(before.distanceTo(map->center()) > 1);
         QCOMPARE(evaluate(task, "JSON.parse(routeJson()).length").toInt(), 2);
-        const QPoint wheelPosition = scene(405,225);
-        const QGeoCoordinate anchored = map->toCoordinate(QPointF(405,225));
+        const QPointF wheelLocal(center.x()-45, center.y());
+        const QPoint wheelPosition = panel->mapToScene(wheelLocal).toPoint();
+        const QGeoCoordinate anchored = map->toCoordinate(wheelLocal);
         QWheelEvent wheel(wheelPosition, window->mapToGlobal(wheelPosition), QPoint(), QPoint(0,120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         QCoreApplication::sendEvent(window, &wheel);
         QCOMPARE(map->zoomLevel(), qreal(16.5));
-        QVERIFY(anchored.distanceTo(map->toCoordinate(QPointF(405,225))) < 0.01);
+        QVERIFY(anchored.distanceTo(map->toCoordinate(wheelLocal)) < 0.01);
         QTRY_VERIFY_WITH_TIMEOUT(!map->loading(), 5000);
         const QString screenshot = qEnvironmentVariable("AGRI_GCS_TEST_PREVIEW");
         if (!screenshot.isEmpty()) {
@@ -607,6 +761,8 @@ int main(int argc, char **argv)
     app.setApplicationName("UiSmoke");
     QQuickStyle::setStyle("Fusion");
     qmlRegisterType<AsyncTileMapItem>("Agri.Map", 1, 0, "AsyncTileMap");
+    qmlRegisterType<PointCloudView>("Agri.Map", 1, 0, "PointCloudView");
+    qmlRegisterUncreatableType<MappingClient>("Agri.Map", 1, 0, "MappingClient", "Provided by tests");
     UiSmoke test;
     return QTest::qExec(&test, argc, argv);
 }

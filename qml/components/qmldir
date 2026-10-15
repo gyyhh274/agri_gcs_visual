@@ -7,6 +7,7 @@ GField 1.0 GField.qml
 StatusDot 1.0 StatusDot.qml
 Toggle 1.0 Toggle.qml
 MapPanel 1.0 MapPanel.qml
+RealtimeMapPanel 1.0 RealtimeMapPanel.qml
 MediaThumb 1.0 MediaThumb.qml
 FormLabel 1.0 FormLabel.qml
 ValueField 1.0 ValueField.qml

@@ -1,0 +1,13 @@
+[Unit]
+Description=Agri GCS point cloud SSH tunnel
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u %h/.local/lib/agri-gcs/mapping_tunnel.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

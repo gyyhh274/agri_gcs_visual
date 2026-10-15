@@ -22,6 +22,8 @@
 #include "GimbalLink.h"
 #include "PhotoLibrary.h"
 #include "RelayDiscovery.h"
+#include "MappingClient.h"
+#include "PointCloudView.h"
 
 namespace {
 void reportError(const QString &message)
@@ -76,7 +78,7 @@ int main(int argc, char *argv[])
     }
     QGuiApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("无人机地面站"));
-    app.setApplicationVersion(QStringLiteral("1.4.0"));
+    app.setApplicationVersion(QStringLiteral("1.5.0"));
     app.setOrganizationName(QStringLiteral("Agri GCS"));
 
     QCommandLineParser parser;
@@ -99,6 +101,11 @@ int main(int argc, char *argv[])
     parser.addOption({QStringLiteral("fullscreen"), QStringLiteral("Open full screen.")});
     parser.addOption({QStringLiteral("software"), QStringLiteral("Use the Qt Quick software renderer.")});
     parser.addOption({QStringLiteral("overview"), QStringLiteral("Use the settings overview layout without sidebar.")});
+    parser.addOption({QStringLiteral("realtime-map"), QStringLiteral("Open the realtime point cloud map.")});
+    parser.addOption({QStringLiteral("offline-map"), QStringLiteral("Open the offline satellite map.")});
+    parser.addOption({QStringLiteral("mapping-demo"), QStringLiteral("Show explicitly labeled synthetic mapping data (no aircraft connection).")});
+    parser.addOption({QStringLiteral("mapping-host"), QStringLiteral("Mapping bridge host or local SSH tunnel endpoint."), QStringLiteral("host")});
+    parser.addOption({QStringLiteral("mapping-port"), QStringLiteral("Mapping bridge TCP port."), QStringLiteral("port")});
     parser.addOption({QStringLiteral("tiles"), QStringLiteral("Offline z/x/y tile directory (no network fallback)."), QStringLiteral("directory")});
     parser.addOption({QStringLiteral("tile-scheme"), QStringLiteral("Offline tile scheme: xyz or tms."), QStringLiteral("scheme")});
     parser.process(app);
@@ -149,6 +156,8 @@ int main(int argc, char *argv[])
     QQuickStyle::setStyle(QStringLiteral("Fusion"));
 
     qmlRegisterType<AsyncTileMapItem>("Agri.Map", 1, 0, "AsyncTileMap");
+    qmlRegisterType<PointCloudView>("Agri.Map", 1, 0, "PointCloudView");
+    qmlRegisterUncreatableType<MappingClient>("Agri.Map", 1, 0, "MappingClient", QStringLiteral("Provided by the application"));
     OfflineMapSource mapSource;
     NestPosition nestPosition(&mapSource);
     AircraftProfile aircraftProfile;
@@ -159,6 +168,22 @@ int main(int argc, char *argv[])
     videoLibrary.setMediaType(1);        // 0=照片 101SIYI_IMG / 1=录像 100SIYI_VID
     videoLibrary.setAutoDownload(false); // 录像文件大，只列列表，下载手动点
     RelayDiscovery relayDiscovery;
+    MappingClient mappingClient;
+    if (parser.isSet(QStringLiteral("mapping-host")))
+        mappingClient.setHost(parser.value(QStringLiteral("mapping-host")));
+    if (parser.isSet(QStringLiteral("mapping-port"))) {
+        bool validPort = false;
+        const int mappingPort = parser.value(QStringLiteral("mapping-port")).toInt(&validPort);
+        if (!validPort || mappingPort < 1 || mappingPort > 65535) {
+            reportError(QStringLiteral("--mapping-port must be 1..65535."));
+            return 2;
+        }
+        mappingClient.setPort(mappingPort);
+    }
+    if (parser.isSet(QStringLiteral("mapping-demo")))
+        mappingClient.startDemo();
+    else
+        mappingClient.setEnabled(true);
     QSettings settings;
     QString tileDirectory = parser.isSet(QStringLiteral("tiles")) ? parser.value(QStringLiteral("tiles"))
         : qEnvironmentVariable("AGRI_GCS_TILE_DIR", settings.value("OfflineMap/directory").toString());
@@ -188,6 +213,8 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("photoLibrary", &photoLibrary);
     engine.rootContext()->setContextProperty("videoLibrary", &videoLibrary);
     engine.rootContext()->setContextProperty("relayDiscovery", &relayDiscovery);
+    engine.rootContext()->setContextProperty("mappingClient", &mappingClient);
+    engine.rootContext()->setContextProperty("initialRealtimeMap", !parser.isSet(QStringLiteral("offline-map")));
     engine.rootContext()->setContextProperty(
         "initialTab", parser.value(QStringLiteral("start-tab")).toInt());
     engine.rootContext()->setContextProperty(
