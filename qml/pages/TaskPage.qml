@@ -9,7 +9,119 @@ Item {
     property int contentTab: 0
     // 启动时默认展示的页签（可用 --start-tab 覆盖，便于截图与自动化验证）
     property int startupTab: initialTab
-    property string missionState: "未接入任务控制"
+    property string missionState: indoorMode ? missionLabel() : "室外航线仅本地编辑"
+    property bool indoorMode: true
+    property int localSelected: -1
+    property int localRevision: 0
+    property string reviewedSession: ""
+    property string uploadedLocalJson: ""
+    property string uploadedMissionId: ""
+    property int uploadedMissionRevision: 0
+    property string pendingUploadJson: ""
+    property string pendingUploadRequest: ""
+    readonly property bool missionActive: groundLink.remoteAvailable && ["FLYING", "HOVERING", "LANDING"].indexOf(groundLink.mission.state) >= 0
+    readonly property bool localEditable: !groundLink.busy && !missionActive
+    readonly property bool routeMatches: uploadedLocalJson.length > 0 && uploadedLocalJson === localJson()
+    readonly property bool canStartLocal: indoorMode && routeMatches && groundLink.remoteAvailable && !groundLink.busy &&
+        groundLink.mission.state === "READY" && groundLink.mission.flight_ready && reviewedSession === groundLink.mission.map_session_id &&
+        uploadedMissionId === groundLink.mission.mission_id && uploadedMissionRevision === groundLink.mission.revision
+    Settings { id: localStore; category: "IndoorMissionV1" }
+    ListModel { id: localWaypoints }
+
+    function missionLabel() {
+        if (!groundLink.remoteAvailable) return "等待机载任务连接"
+        var labels = {IDLE: "尚无机载任务", READY: "已上传，等待开始", FLYING: "前往航点", HOVERING: "到点悬停", COMPLETED: "任务完成", FAILED: "任务异常", LANDING: "降落中"}
+        return labels[groundLink.mission.state] || "状态未知"
+    }
+    function localJson() {
+        var revision = localRevision // Track ListModel edits in dependent bindings.
+        var points = []
+        for (var i = 0; i < localWaypoints.count; ++i) {
+            var p = localWaypoints.get(i)
+            points.push({id: i + 1, x: Number(p.x), y: Number(p.y), z: Number(p.z), hover_sec: Number(p.hover_sec)})
+        }
+        return JSON.stringify(points)
+    }
+    function validLocal(x, y, z, hold) {
+        return isFinite(x) && isFinite(y) && isFinite(z) && isFinite(hold) && Math.abs(x) <= 1000 && Math.abs(y) <= 1000 && z >= 0 && z <= 100 && hold >= 0 && hold <= 60
+    }
+    function addLocal(x, y) {
+        if (!localEditable || localWaypoints.count >= 200 || !validLocal(x, y, 1, 2)) return
+        localWaypoints.append({x: Number(x.toFixed(2)), y: Number(y.toFixed(2)), z: 1.0, hover_sec: 2.0})
+        localSelected = localWaypoints.count - 1; localRevision++
+    }
+    function moveLocal(index, x, y) {
+        if (!localEditable || index < 0 || index >= localWaypoints.count || !validLocal(x, y, 1, 2)) return
+        localWaypoints.setProperty(index, "x", Number(x.toFixed(2)))
+        localWaypoints.setProperty(index, "y", Number(y.toFixed(2)))
+        localSelected = index; localRevision++
+    }
+    function saveLocal() {
+        localStore.setValue("routeJson", localJson()); localStore.sync()
+        actionMessage("局部航线已保存；定位重启后需重新核对坐标")
+    }
+    function importLocal(text) {
+        if (!localEditable) return
+        try {
+            var points = JSON.parse(text)
+            if (!Array.isArray(points) || points.length > 200) throw new Error("航点数量应为 0–200")
+            for (var i = 0; i < points.length; ++i) {
+                var p = points[i]
+                for (var k = 0; k < 4; ++k) {
+                    var key = ["x", "y", "z", "hover_sec"][k]
+                    if (typeof p[key] !== "number") throw new Error("需要数值字段 x/y/z/hover_sec")
+                }
+                if (!validLocal(p.x, p.y, p.z, p.hover_sec)) throw new Error("局部坐标或悬停时间无效")
+            }
+            localWaypoints.clear()
+            for (i = 0; i < points.length; ++i) {
+                p = points[i]; localWaypoints.append({x: p.x, y: p.y, z: p.z, hover_sec: p.hover_sec})
+            }
+            localSelected = localWaypoints.count ? 0 : -1; localRevision++
+            uploadedLocalJson = ""; routeDialog.close()
+        } catch (error) { actionMessage("局部航线导入失败：" + error.message) }
+    }
+    function uploadLocal() {
+        if (!localEditable || !groundLink.remoteAvailable || reviewedSession !== groundLink.mission.map_session_id) {
+            actionMessage("请连接机载任务网关，核对本次定位会话的原点和方向，再勾选确认")
+            return
+        }
+        pendingUploadJson = localJson()
+        pendingUploadRequest = groundLink.uploadLocalRoute(JSON.parse(pendingUploadJson), reviewedSession)
+    }
+    function startLocal() {
+        if (!canStartLocal) { actionMessage("请上传当前航线，并等待机载起飞悬停及任务就绪"); return }
+        groundLink.startUploadedMission(groundLink.mission.mission_id, groundLink.mission.revision, reviewedSession)
+    }
+    function localPointState(index) {
+        if (!routeMatches || !groundLink.remoteAvailable) return "本地编辑"
+        if (index < groundLink.mission.completed) return "已完成"
+        if (groundLink.mission.state === "FAILED") return "任务异常"
+        if (missionActive && index + 1 === groundLink.mission.current_waypoint_id) return groundLink.mission.state === "HOVERING" ? "到点悬停" : "执行中"
+        return "待执行"
+    }
+    Connections {
+        target: groundLink
+        function onNotified(text) { page.actionMessage(text) }
+        function onChanged() {
+            if (!groundLink.remoteAvailable || page.reviewedSession !== groundLink.mission.map_session_id) {
+                page.reviewedSession = ""; page.uploadedLocalJson = ""; page.uploadedMissionId = ""; page.uploadedMissionRevision = 0
+            } else if (page.uploadedMissionId.length && (page.uploadedMissionId !== groundLink.mission.mission_id || page.uploadedMissionRevision !== groundLink.mission.revision)) {
+                page.uploadedLocalJson = ""; page.uploadedMissionId = ""; page.uploadedMissionRevision = 0
+            }
+        }
+        function onCommandFinished(requestId, operation, accepted, reason) {
+            if (operation === "upload" && requestId === page.pendingUploadRequest) {
+                page.uploadedLocalJson = accepted ? page.pendingUploadJson : ""
+                page.uploadedMissionId = accepted ? groundLink.mission.mission_id : ""
+                page.uploadedMissionRevision = accepted ? groundLink.mission.revision : 0
+                page.pendingUploadRequest = ""
+            }
+            var text = (accepted ? "机载已确认 " : "机载未确认 ") + operation + " · " + reason
+            page.actionMessage(text)
+            liveLogs.insert(0, {time: Qt.formatTime(new Date(), "hh:mm:ss"), type: "任务", module: "机载", content: text})
+        }
+    }
     property bool nestOpen: false
     property bool charging: true
     property bool thermal: false
@@ -146,6 +258,8 @@ Item {
     Component.onCompleted: {
         var saved = savedRouteJson()
         if (saved.length) importRoute(saved)
+        var localSaved = localStore.value("routeJson", "")
+        if (localSaved.length) importLocal(localSaved)
         contentTab = startupTab
         // 面板就绪后自动连接云台中转（地址由视频流地址推导）
         Qt.callLater(connectGimbal)
@@ -287,26 +401,26 @@ Item {
                 anchors.left: parent.left; anchors.right: parent.right; anchors.topMargin: 10
                 anchors.top: nestSummary.bottom
                 anchors.bottom: parent.bottom
-                title: "任务信息（演示）"
+                title: page.indoorMode ? "室内航点任务" : "任务信息（本地编辑）"
                 Column {
                     x: 10; y: 8; width: parent.width - 20; spacing: 5
                     Repeater {
-                        model: [["任务名称", "电力巡检_20241226"], ["任务类型", "航线巡检"], ["任务状态", page.missionState], ["开始时间", "2024-12-26 15:20:11"], ["已飞时间", "00:10:13"]]
+                        model: [["任务名称", page.indoorMode ? "室内演示" : "室外航线"], ["任务类型", page.indoorMode ? "局部坐标 · world" : "WGS84 本地编辑"], ["任务状态", page.missionState], ["定位状态", groundLink.odomFresh ? "有效" : "等待定位"], ["任务就绪", groundLink.missionReady ? "就绪" : "未就绪"]]
                         delegate: Row {
                             width: parent.width; height: 20
                             Text { width: 84; text: modelData[0]; color: "#aebfd0"; font.pixelSize: 13 }
                             Text { text: modelData[1]; color: index === 2 ? "#ffffff" : "#dce9f7"; font.pixelSize: 13 }
                         }
                     }
-                    Row { width: parent.width; Text { text: "航点进度"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: "3 / 12"; width: 120; color: "#dce9f7"; font.pixelSize: 13 } Text { width: 44; horizontalAlignment: Text.AlignRight; text: "25%"; color: "#dce9f7"; font.pixelSize: 13 } }
-                    Rectangle { width: parent.width; height: 13; radius: 6; color: "#143149"; Rectangle { width: parent.width * .25; height: parent.height; radius: 6; color: "#087dff" } }
-                    Row { width: parent.width; Text { text: "预计总时长"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: "00:40:00"; color: "#dce9f7"; font.pixelSize: 13 } }
+                    Row { width: parent.width; Text { text: "航点进度"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: groundLink.remoteAvailable ? groundLink.mission.completed + " / " + groundLink.mission.total : "—"; width: 120; color: "#dce9f7"; font.pixelSize: 13 } Text { width: 44; horizontalAlignment: Text.AlignRight; text: groundLink.remoteAvailable && groundLink.mission.total > 0 ? Math.round(groundLink.mission.completed / groundLink.mission.total * 100) + "%" : "—"; color: "#dce9f7"; font.pixelSize: 13 } }
+                    Rectangle { width: parent.width; height: 13; radius: 6; color: "#143149"; Rectangle { width: groundLink.remoteAvailable && groundLink.mission.total > 0 ? parent.width * groundLink.mission.completed / groundLink.mission.total : 0; height: parent.height; radius: 6; color: "#087dff" } }
+                    Row { width: parent.width; Text { text: "预计总时长"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: "按机载执行进度更新"; color: "#dce9f7"; font.pixelSize: 13 } }
                     Grid {
                         width: parent.width; columns: 2; spacing: 8
-                        GButton { width: 119; height:36; text: "开始任务"; icon: "▶"; fill: "#00b968"; hoverFill: "#00d079"; onClicked: page.actionMessage("任务控制未接入，未发送飞控指令") }
-                        GButton { width: 119; height:36; text: "暂停任务"; icon: "Ⅱ"; fill: "#ff8a00"; hoverFill: "#ffa126"; onClicked: page.actionMessage("任务控制未接入，未发送飞控指令") }
-                        GButton { width: 119; height:36; text: "返航"; icon: "⌾"; fill: "#087dff"; hoverFill: "#1695ff"; onClicked: page.actionMessage("返航控制未接入，未发送飞控指令") }
-                        GButton { width: 119; height:36; text: "紧急降落"; icon: "×"; fill: "#ff4148"; hoverFill: "#ff5c61"; onClicked: page.actionMessage("当前为界面演示，未连接飞控，未发送降落指令") }
+                        GButton { width: 119; height:36; text: "开始任务"; icon: "▶"; fill: "#00b968"; hoverFill: "#00d079"; enabled: page.canStartLocal; onClicked: page.startLocal() }
+                        GButton { width: 119; height:36; text: "暂停任务"; icon: "Ⅱ"; fill: "#ff8a00"; hoverFill: "#ffa126"; enabled: false; onClicked: page.actionMessage("首版暂不支持暂停，请使用遥控器接管") }
+                        GButton { width: 119; height:36; text: "返航"; icon: "⌾"; fill: "#087dff"; hoverFill: "#1695ff"; enabled: false }
+                        GButton { width: 119; height:36; text: "紧急降落"; icon: "×"; fill: "#ff4148"; hoverFill: "#ff5c61"; enabled: false }
                     }
                 }
             }
@@ -320,6 +434,7 @@ Item {
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                     // Only the lower list changes tabs; keep the map viewport fixed.
                     height: 450
+                    visible: !page.indoorMode
                     editable: true; waypointModel: waypoints
                     selectedIndex: page.selectedWaypoint; routeRevision: page.routeRevision
                     onWaypointAdded: page.addWaypoint(latitude, longitude)
@@ -327,6 +442,23 @@ Item {
                     onWaypointSelected: page.selectedWaypoint = index
                     onClearRequested: clearRouteDialog.open()
                 }
+
+            IndoorMapPanel {
+                id: indoorMap
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                height: 450; visible: page.indoorMode
+                waypointModel: localWaypoints; selectedIndex: page.localSelected; routeRevision: page.localRevision
+                editingEnabled: page.localEditable
+                onWaypointAdded: page.addLocal(xMeters, yMeters)
+                onWaypointMoved: page.moveLocal(index, xMeters, yMeters)
+                onWaypointSelected: page.localSelected = index
+                onClearRequested: clearRouteDialog.open()
+                onOutdoorRequested: page.indoorMode = false
+            }
+            GButton {
+                visible: !page.indoorMode; x: 10; y: 54; width: 122; height: 30
+                text: "切到室内地图"; onClicked: page.indoorMode = true
+            }
 
             GCard {
                 objectName: "taskDataPanel"
@@ -351,12 +483,12 @@ Item {
                     }
                     Row {
                         anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                        GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "导入航线"; onClicked: { routeInput.text = page.savedRouteJson() || page.routeJson(); routeDialog.open() } }
-                        GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "保存航线"; onClicked: page.saveRoute() }
-                        GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "上传航线"; onClicked: page.actionMessage("尚未校准经纬度与机载 world 坐标；航线未发送") }
+                        GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "导入航线"; onClicked: { routeInput.text = page.indoorMode ? page.localJson() : page.savedRouteJson() || page.routeJson(); routeDialog.open() } }
+                        GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "保存航线"; onClicked: page.indoorMode ? page.saveLocal() : page.saveRoute() }
+                        GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "上传航线"; enabled: page.indoorMode && page.localEditable && groundLink.remoteAvailable; onClicked: page.uploadLocal() }
                     }
                 }
-                Loader { anchors.left: parent.left; anchors.right: parent.right; anchors.top: tabs.bottom; anchors.bottom: parent.bottom; sourceComponent: page.contentTab === 0 ? waypointView : page.contentTab === 1 ? logView : page.contentTab === 2 ? photoView : videoView }
+                Loader { anchors.left: parent.left; anchors.right: parent.right; anchors.top: tabs.bottom; anchors.bottom: parent.bottom; sourceComponent: page.contentTab === 0 ? (page.indoorMode ? localWaypointView : waypointView) : page.contentTab === 1 ? logView : page.contentTab === 2 ? photoView : videoView }
             }
         }
 
@@ -645,6 +777,83 @@ Item {
                     }
                 }
             }
+        }
+    }
+
+    Component {
+        id: localWaypointView
+        Item {
+            Row {
+                x: 8; y: 3; spacing: 8
+                CheckBox {
+                    objectName: "localSessionReview"
+                    checked: groundLink.remoteAvailable && page.reviewedSession === groundLink.mission.map_session_id
+                    enabled: groundLink.remoteAvailable && page.localEditable
+                    text: "已核对本次定位原点、X/Y方向和Z高度"
+                    contentItem: Text { text: parent.text; color: "#c6dfeb"; leftPadding: parent.indicator.width + 6; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12 }
+                    onClicked: page.reviewedSession = checked ? groundLink.mission.map_session_id : ""
+                }
+                GButton { height: 32; width: 88; text: "查询机载"; enabled: groundLink.remoteAvailable && !groundLink.busy; onClicked: groundLink.queryMission() }
+                Text { text: groundLink.remoteAvailable ? "Z范围 " + groundLink.mission.min_z + "–" + groundLink.mission.max_z + "m" : "连接设置 → 127.0.0.1:8765"; color: "#91adc3"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+            }
+            Rectangle {
+                x: 0; y: 44; width: parent.width; height: 32; color: "#0a2234"
+                Row {
+                    Repeater { model: [["序号", 52], ["X (m)", 110], ["Y (m)", 110], ["Z 局部高度 (m)", 130], ["悬停 (s)", 100], ["状态", 120], ["操作", 150]]
+                        delegate: Text { width: modelData[1]; height: 32; text: modelData[0]; color: "#9fb4c8"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+                }
+            }
+            ListView {
+                objectName: "localWaypointList"
+                x: 0; y: 76; width: parent.width; height: parent.height - y; model: localWaypoints; clip: true
+                Text { anchors.centerIn: parent; visible: localWaypoints.count === 0; text: "点击添加航点，再在网格选点 · 默认 Z=1m，可逐点编辑"; color: "#91adc3"; font.pixelSize: 13 }
+                delegate: Rectangle {
+                    id: localRow
+                    // x/y are also Item geometry names: always access coordinates through model.
+                    property real pointX: model.x
+                    property real pointY: model.y
+                    property real pointZ: model.z
+                    property real pointHold: model.hover_sec
+                    width: ListView.view.width; height: 35
+                    color: index === page.localSelected ? "#0757ad" : index % 2 ? "#081d2d" : "#071725"
+                    MouseArea { anchors.fill: parent; onClicked: page.localSelected = index }
+                    Row {
+                        Repeater {
+                            model: [[index + 1, 52], [localRow.pointX.toFixed(2), 110], [localRow.pointY.toFixed(2), 110], [localRow.pointZ.toFixed(2), 130], [localRow.pointHold, 100], [page.localPointState(index), 120]]
+                            delegate: Text { width: modelData[1]; height: 35; text: modelData[0]; color: "#dce9f7"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        }
+                        GButton { text: "编辑"; height: 31; width: 65; enabled: page.localEditable; onClicked: {
+                            page.localSelected = index; localX.text = localRow.pointX; localY.text = localRow.pointY; localZ.text = localRow.pointZ; localHold.text = localRow.pointHold; localEdit.open()
+                        } }
+                        GButton { text: "删除"; height: 31; width: 65; enabled: page.localEditable; onClicked: {
+                            if (!page.localEditable) return
+                            localWaypoints.remove(index); page.localSelected = Math.min(page.localSelected, localWaypoints.count - 1); page.localRevision++
+                        } }
+                    }
+                }
+            }
+        }
+    }
+    Dialog {
+        id: localEdit
+        title: "编辑局部航点 " + (page.localSelected + 1)
+        width: 420; height: 320; x: (page.width - width) / 2; y: (page.height - height) / 2; modal: true
+        background: Rectangle { color: "#0a2234"; border.color: "#1b5279"; radius: 6 }
+        contentItem: Column {
+            spacing: 12
+            Row { Text { text: "X (m)"; width: 95; color: "white" } GField { id: localX; width: 270 } }
+            Row { Text { text: "Y (m)"; width: 95; color: "white" } GField { id: localY; width: 270 } }
+            Row { Text { text: "Z 局部高度"; width: 95; color: "white" } GField { id: localZ; width: 270 } }
+            Row { Text { text: "悬停 (s)"; width: 95; color: "white" } GField { id: localHold; width: 270 } }
+            GButton { text: "保存"; fill: "#087dff"; onClicked: {
+                var px = Number(localX.text), py = Number(localY.text), pz = Number(localZ.text), hold = Number(localHold.text)
+                if (!page.localEditable || page.localSelected < 0 || !localX.text.trim().length || !localY.text.trim().length || !localZ.text.trim().length || !localHold.text.trim().length || !page.validLocal(px, py, pz, hold)) {
+                    page.actionMessage("请输入有效的局部坐标和 0–60 秒悬停时间"); return
+                }
+                localWaypoints.set(page.localSelected, {x: px, y: py, z: pz, hover_sec: hold})
+                page.localRevision++; localEdit.close()
+            } }
         }
     }
 
@@ -966,9 +1175,9 @@ Item {
         modal:true
         background: Rectangle {color:"#0a2234"; border.color:"#1b5279"; radius:6}
         contentItem: Column { spacing:12
-            Text {text:"粘贴包含 lat / lon / alt / speed 字段的航点数组"; color:"#cfe0ef"; font.pixelSize:14}
+            Text {text: page.indoorMode ? "局部航点数组：x / y / z / hover_sec（单位米、秒）" : "粘贴包含 lat / lon / alt / speed 字段的航点数组"; color:"#cfe0ef"; font.pixelSize:14}
             ScrollView { width:parent.width; height:340; TextArea {id:routeInput; selectByMouse:true; wrapMode:TextEdit.Wrap; color:"#dce9f7"; font.pixelSize:13; background:Rectangle {color:"#061522"}} }
-            Row {spacing:10; GButton {text:"导入"; fill:"#087dff"; onClicked:page.importRoute()} GButton {text:"取消"; onClicked:routeDialog.close()} }
+            Row {spacing:10; GButton {text:"导入"; fill:"#087dff"; onClicked: page.indoorMode ? page.importLocal(routeInput.text) : page.importRoute()} GButton {text:"取消"; onClicked:routeDialog.close()} }
         }
     }
     Dialog {
@@ -995,7 +1204,12 @@ Item {
         modal: true; standardButtons: Dialog.Ok | Dialog.Cancel
         x: (Overlay.overlay.width - width) / 2; y: (Overlay.overlay.height - height) / 2
         contentItem: Text { text: "将清空当前编辑航点；不会清除飞控任务。\n保存后才会覆盖已保存的本地航线。"; color: "#203040"; wrapMode: Text.WordWrap }
-        onAccepted: page.clearRoute()
+        onAccepted: {
+            if (page.indoorMode) {
+                if (!page.localEditable) return
+                localWaypoints.clear(); page.localSelected = -1; page.localRevision++
+            } else page.clearRoute()
+        }
     }
     Popup {
         id:photoDialog; width:910; height:630; x:(page.width-width)/2; y:(page.height-height)/2; modal:true; focus:true

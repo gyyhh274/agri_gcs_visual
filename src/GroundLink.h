@@ -3,10 +3,17 @@
 #include <QObject>
 #include <QTcpSocket>
 #include <QTimer>
+#include <QVariantMap>
+#include <QVariantList>
+#include <QHash>
+#include <QJsonObject>
 
-// Read-only link to the onboard ROS gateway. No flight command is exposed here.
+// TCP JSON-lines telemetry and versioned local-coordinate mission commands.
 class GroundLink final : public QObject {
     Q_OBJECT
+    Q_PROPERTY(QVariantMap mission READ mission NOTIFY changed)
+    Q_PROPERTY(bool remoteAvailable READ remoteAvailable NOTIFY changed)
+    Q_PROPERTY(bool busy READ busy NOTIFY changed)
     Q_PROPERTY(bool connected READ connected NOTIFY changed)
     Q_PROPERTY(bool connecting READ connecting NOTIFY changed)
     Q_PROPERTY(bool fcuConnected READ fcuConnected NOTIFY changed)
@@ -22,6 +29,12 @@ class GroundLink final : public QObject {
     Q_PROPERTY(double worldZ READ worldZ NOTIFY changed)
 public:
     explicit GroundLink(QObject *parent = nullptr);
+    QVariantMap mission() const { return m_mission; }
+    bool remoteAvailable() const { return m_connected && m_protocol == 2 && !m_mission.isEmpty(); }
+    bool busy() const { return !m_pending.isEmpty(); }
+    Q_INVOKABLE QString uploadLocalRoute(const QVariantList &waypoints, const QString &session);
+    Q_INVOKABLE QString startUploadedMission(const QString &missionId, int revision, const QString &session);
+    Q_INVOKABLE void queryMission();
     bool connected() const { return m_connected; }
     bool connecting() const { return m_connecting; }
     bool fcuConnected() const { return m_fcuConnected; }
@@ -40,9 +53,18 @@ public:
     Q_INVOKABLE void disconnectFromGateway();
 signals:
     void changed();
+    void notified(const QString &text);
+    void commandFinished(const QString &requestId, const QString &operation, bool accepted, const QString &reason);
 private:
+    QString sendCommand(const QString &operation, const QString &session, const QString &missionId,
+                        int revision, const QVariantList &waypoints = {});
+    bool consumeMission(const QJsonObject &object);
     void consumeLine(const QByteArray &line);
     void resetTelemetry();
+    QVariantMap m_mission;
+    int m_protocol = 0;
+    struct Pending { QString operation; qint64 sentMs; };
+    QHash<QString, Pending> m_pending;
     QTcpSocket m_socket;
     QTimer m_watchdog;
     QByteArray m_buffer;

@@ -1,11 +1,78 @@
 #include <QtTest>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QJsonObject>
+#include <QJsonDocument>
 #include "../src/GroundLink.h"
 
 class GroundLinkTest : public QObject {
     Q_OBJECT
+    static QJsonObject mission(const QString &session = "session-1")
+    {
+        return {{"frame_id", "world"}, {"map_session_id", session}, {"mission_id", "mission-1"},
+                {"revision", 1}, {"state", "READY"}, {"current_waypoint_id", 0}, {"completed", 0},
+                {"total", 1}, {"reason", ""}, {"odom_fresh", true}, {"flight_ready", true},
+                {"world_x", 0.}, {"world_y", 0.}, {"world_z", 1.},
+                {"max_abs_xy", 30.}, {"min_z", .3}, {"max_z", 2.5}};
+    }
+    static void sendTelemetry(QTcpSocket *peer, const QJsonObject &status)
+    {
+        QJsonObject frame{{"protocol", 2}, {"type", "telemetry"}, {"server", "agri-onboard-ros"},
+                          {"fcu_connected", true}, {"armed", true}, {"mission_ready", true},
+                          {"odom_fresh", true}, {"mode", "OFFBOARD"}, {"battery_percent", 67.},
+                          {"world_x", 0.}, {"world_y", 0.}, {"world_z", 1.}, {"mission", status}};
+        peer->write(QJsonDocument(frame).toJson(QJsonDocument::Compact) + '\n'); peer->flush();
+    }
 private slots:
+    void remoteUploadRequiresAckAndSession()
+    {
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        GroundLink link; link.connectToGateway("127.0.0.1", server.serverPort());
+        QVERIFY(server.waitForNewConnection(2000));
+        QTcpSocket *peer = server.nextPendingConnection(); QVERIFY(peer);
+        sendTelemetry(peer, mission());
+        QTRY_VERIFY(link.remoteAvailable());
+        QVariantList points{QVariantMap{{"id", 1}, {"x", 1.5}, {"y", -1.}, {"z", 1.}, {"hover_sec", 2.}}};
+        QVERIFY(link.uploadLocalRoute(points, "old-session").isEmpty());
+        QVERIFY(!link.busy());
+        const QString request = link.uploadLocalRoute(points, "session-1");
+        QVERIFY(!request.isEmpty()); QVERIFY(link.busy());
+        QTRY_VERIFY(peer->canReadLine());
+        const QJsonObject sent = QJsonDocument::fromJson(peer->readLine()).object();
+        QCOMPARE(sent.value("operation").toString(), QString("upload"));
+        QCOMPARE(sent.value("frame_id").toString(), QString("world"));
+        QVERIFY(link.startUploadedMission("mission-1", 1, "session-1").isEmpty());
+        QSignalSpy finished(&link, &GroundLink::commandFinished);
+        QJsonObject ack{{"protocol", 2}, {"type", "ack"}, {"request_id", "unrelated"},
+                        {"accepted", true}, {"reason", "Accepted"}, {"mission", mission()}};
+        peer->write(QJsonDocument(ack).toJson(QJsonDocument::Compact) + '\n'); peer->flush();
+        QTest::qWait(30); QVERIFY(link.busy()); QCOMPARE(finished.count(), 0);
+        ack.insert("request_id", request);
+        peer->write(QJsonDocument(ack).toJson(QJsonDocument::Compact) + '\n'); peer->flush();
+        QTRY_COMPARE(finished.count(), 1); QVERIFY(!link.busy());
+        QCOMPARE(finished.at(0).at(2).toBool(), true);
+        sendTelemetry(peer, mission("session-2"));
+        QTRY_COMPARE(link.mission().value("map_session_id").toString(), QString("session-2"));
+        QVERIFY(link.startUploadedMission("mission-1", 1, "session-1").isEmpty());
+    }
+
+    void rejectsBadRemoteTelemetryAndLocalEnvelope()
+    {
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        GroundLink link; link.connectToGateway("127.0.0.1", server.serverPort());
+        QVERIFY(server.waitForNewConnection(2000)); QTcpSocket *peer = server.nextPendingConnection();
+        auto invalid = mission(); invalid.insert("frame_id", "gps"); sendTelemetry(peer, invalid);
+        QTest::qWait(30); QVERIFY(!link.remoteAvailable());
+        sendTelemetry(peer, mission()); QTRY_VERIFY(link.remoteAvailable());
+        QVariantList points{QVariantMap{{"id", 1}, {"x", 1.}, {"y", 0.}, {"z", 120.}, {"hover_sec", 2.}}};
+        QVERIFY(link.uploadLocalRoute(points, "session-1").isEmpty()); QVERIFY(!link.busy());
+        QSignalSpy finished(&link, &GroundLink::commandFinished);
+        QVERIFY(!link.startUploadedMission("mission-1", 1, "session-1").isEmpty());
+        peer->disconnectFromHost(); QTRY_VERIFY(!link.connected());
+        QCOMPARE(finished.count(), 1); QVERIFY(!finished.at(0).at(2).toBool());
+        QVERIFY(link.mission().isEmpty()); QVERIFY(!link.busy());
+    }
+
     void rejectsInvalidConfiguration()
     {
         GroundLink link;

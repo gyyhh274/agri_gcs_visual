@@ -7,6 +7,7 @@
     <file>qml/components/StatusDot.qml</file>
     <file>qml/components/Toggle.qml</file>
     <file>qml/components/MapPanel.qml</file>
+    <file>qml/components/IndoorMapPanel.qml</file>
     <file>qml/components/qmldir</file>
     <file>qml/components/VideoConfig.qml</file>
     <file>qml/components/VideoStream.qml</file>

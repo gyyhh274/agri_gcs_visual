@@ -13,6 +13,7 @@ Rectangle {
 
     implicitWidth: 112
     implicitHeight: 40
+    opacity: enabled ? 1.0 : 0.4
     radius: 4
     activeFocusOnTab: true
     Accessible.role: Accessible.Button

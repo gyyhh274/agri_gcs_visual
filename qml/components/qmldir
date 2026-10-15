@@ -14,3 +14,5 @@ FieldRow 1.0 FieldRow.qml
 ChoiceField 1.0 ChoiceField.qml
 SwitchRow 1.0 SwitchRow.qml
 ConnectionMode 1.0 ConnectionMode.qml
+
+IndoorMapPanel 1.0 IndoorMapPanel.qml
