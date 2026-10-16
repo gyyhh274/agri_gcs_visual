@@ -27,6 +27,10 @@ Item {
         uploadedMissionId === groundLink.mission.mission_id && uploadedMissionRevision === groundLink.mission.revision
     Settings { id: localStore; category: "IndoorMissionV1" }
     ListModel { id: localWaypoints }
+    property real defaultLocalZ: {
+        var v = Number(localStore.value("defaultZ", 1.0))
+        return (!isNaN(v) && v >= 0 && v <= 100) ? v : 1.0
+    }
 
     function missionLabel() {
         if (!groundLink.remoteAvailable) return "等待机载任务连接"
@@ -45,9 +49,10 @@ Item {
     function validLocal(x, y, z, hold) {
         return isFinite(x) && isFinite(y) && isFinite(z) && isFinite(hold) && Math.abs(x) <= 1000 && Math.abs(y) <= 1000 && z >= 0 && z <= 100 && hold >= 0 && hold <= 60
     }
-    function addLocal(x, y) {
-        if (!localEditable || localWaypoints.count >= 200 || !validLocal(x, y, 1, 2)) return
-        localWaypoints.append({x: Number(x.toFixed(2)), y: Number(y.toFixed(2)), z: 1.0, hover_sec: 2.0})
+    function addLocal(x, y, z) {
+        var alt = (z !== undefined && isFinite(z)) ? z : ((typeof defaultLocalZ !== "undefined" && isFinite(defaultLocalZ)) ? defaultLocalZ : 1.0)
+        if (!localEditable || localWaypoints.count >= 200 || !validLocal(x, y, alt, 2)) return
+        localWaypoints.append({x: Number(x.toFixed(2)), y: Number(y.toFixed(2)), z: Number(alt.toFixed(2)), hover_sec: 2.0})
         localSelected = localWaypoints.count - 1; localRevision++
     }
     function moveLocal(index, x, y) {
@@ -449,9 +454,20 @@ Item {
                 height: 450; visible: page.indoorMode
                 waypointModel: localWaypoints; selectedIndex: page.localSelected; routeRevision: page.localRevision
                 editingEnabled: page.localEditable
-                onWaypointAdded: page.addLocal(xMeters, yMeters)
+                defaultZ: page.defaultLocalZ
+                onDefaultZChanged: {
+                    page.defaultLocalZ = defaultZ
+                    localStore.setValue("defaultZ", defaultZ)
+                }
+                onWaypointAdded: page.addLocal(xMeters, yMeters, zMeters)
                 onWaypointMoved: page.moveLocal(index, xMeters, yMeters)
                 onWaypointSelected: page.localSelected = index
+                onWaypointDoubleClicked: {
+                    page.localSelected = index
+                    var pt = localWaypoints.get(index)
+                    localX.text = pt.x; localY.text = pt.y; localZ.text = pt.z; localHold.text = pt.hover_sec
+                    localEdit.open()
+                }
                 onClearRequested: clearRouteDialog.open()
                 onOutdoorRequested: page.indoorMode = false
             }
@@ -807,7 +823,7 @@ Item {
             ListView {
                 objectName: "localWaypointList"
                 x: 0; y: 76; width: parent.width; height: parent.height - y; model: localWaypoints; clip: true
-                Text { anchors.centerIn: parent; visible: localWaypoints.count === 0; text: "点击添加航点，再在网格选点 · 默认 Z=1m，可逐点编辑"; color: "#91adc3"; font.pixelSize: 13 }
+                Text { anchors.centerIn: parent; visible: localWaypoints.count === 0; text: "点击添加航点，再在网格选点 · 默认 Z=" + page.defaultLocalZ.toFixed(1) + "m，可在上方或表格修改"; color: "#91adc3"; font.pixelSize: 13 }
                 delegate: Rectangle {
                     id: localRow
                     // x/y are also Item geometry names: always access coordinates through model.

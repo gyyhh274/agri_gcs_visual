@@ -13,11 +13,19 @@ Rectangle {
     property real pixelsPerMeter: 30
     property real centerX: 0
     property real centerY: 0
-    signal waypointAdded(real xMeters, real yMeters)
+    property real defaultZ: 1.0
+    signal waypointAdded(real xMeters, real yMeters, real zMeters)
     signal waypointMoved(int index, real xMeters, real yMeters)
     signal waypointSelected(int index)
+    signal waypointDoubleClicked(int index)
     signal clearRequested()
     signal outdoorRequested()
+
+    onDefaultZChanged: {
+        if (defaultZInput && parseFloat(defaultZInput.text) !== root.defaultZ) {
+            defaultZInput.text = root.defaultZ.toString()
+        }
+    }
 
     function pointFor(x, y) { return Qt.point(width / 2 + (x - centerX) * pixelsPerMeter, height / 2 - (y - centerY) * pixelsPerMeter) }
     function coordinateAt(x, y) { return Qt.point(centerX + (x - width / 2) / pixelsPerMeter, centerY - (y - height / 2) / pixelsPerMeter) }
@@ -118,10 +126,14 @@ Rectangle {
                 root.centerY = initialCenterY + (mouse.y - downY) / root.pixelsPerMeter
             }
         }
+        onDoubleClicked: {
+            var hit = root.hitWaypoint(mouse.x, mouse.y)
+            if (hit >= 0) root.waypointDoubleClicked(hit)
+        }
         onReleased: {
             if (!moved && dragIndex < 0 && root.adding && root.editingEnabled) {
                 var at = root.coordinateAt(mouse.x, mouse.y)
-                root.waypointAdded(at.x, at.y)
+                root.waypointAdded(at.x, at.y, root.defaultZ)
             }
             dragIndex = -1
         }
@@ -137,6 +149,23 @@ Rectangle {
             }
             Row { spacing: 6
                 GButton { objectName: "indoorAddButton"; width: 88; height: 29; text: root.adding ? "结束添加" : "添加航点"; enabled: root.editingEnabled; onClicked: root.adding = !root.adding }
+                Row {
+                    spacing: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text { anchors.verticalCenter: parent.verticalCenter; text: "默认Z:"; color: "#ccebf5"; font.pixelSize: 12 }
+                    GField {
+                        id: defaultZInput
+                        width: 52; height: 29
+                        text: root.defaultZ.toString()
+                        onTextChanged: {
+                            var val = parseFloat(text)
+                            if (!isNaN(val) && val >= 0 && val <= 100) {
+                                if (root.defaultZ !== val) root.defaultZ = val
+                            }
+                        }
+                    }
+                    Text { anchors.verticalCenter: parent.verticalCenter; text: "m"; color: "#9cb8c8"; font.pixelSize: 12 }
+                }
                 GButton { width: 45; height: 29; text: "+"; onClicked: root.zoomAt(1.3, root.width / 2, root.height / 2) }
                 GButton { width: 45; height: 29; text: "−"; onClicked: root.zoomAt(1 / 1.3, root.width / 2, root.height / 2) }
                 GButton { width: 80; height: 29; text: "定位原点"; onClicked: { root.centerX = 0; root.centerY = 0 } }
