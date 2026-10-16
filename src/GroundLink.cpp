@@ -86,6 +86,15 @@ GroundLink::GroundLink(QObject *parent) : QObject(parent)
     m_watchdog.start();
 }
 
+GroundLink::~GroundLink()
+{
+    // QTcpSocket can emit disconnected during member destruction. Stop callbacks
+    // before QString/mission members are destroyed, including pending-command teardown.
+    m_watchdog.stop();
+    m_socket.disconnect(this);
+    m_socket.abort();
+}
+
 void GroundLink::connectToGateway(const QString &host, int port)
 {
     const QString trimmed = host.trimmed();

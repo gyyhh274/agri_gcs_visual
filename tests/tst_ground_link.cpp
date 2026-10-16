@@ -25,6 +25,21 @@ class GroundLinkTest : public QObject {
         peer->write(QJsonDocument(frame).toJson(QJsonDocument::Compact) + '\n'); peer->flush();
     }
 private slots:
+    void connectedLinkCanBeDestroyedWhileAwaitingAck()
+    {
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        auto *link = new GroundLink;
+        link->connectToGateway("127.0.0.1", server.serverPort());
+        QVERIFY(server.waitForNewConnection(2000)); QTcpSocket *peer = server.nextPendingConnection(); QVERIFY(peer);
+        sendTelemetry(peer, mission()); QTRY_VERIFY(link->remoteAvailable());
+        QVERIFY(!link->startUploadedMission("mission-1", 1, "session-1").isEmpty());
+        QTRY_VERIFY(peer->canReadLine()); peer->readLine();
+        QSignalSpy finished(link, &GroundLink::commandFinished);
+        delete link;
+        QCOMPARE(finished.count(), 0);
+        QTRY_COMPARE(peer->state(), QAbstractSocket::UnconnectedState);
+    }
+
     void futureUpdatesAreVersionedAndAcknowledged()
     {
         QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));

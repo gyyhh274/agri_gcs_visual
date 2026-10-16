@@ -29,6 +29,7 @@ class GroundLink final : public QObject {
     Q_PROPERTY(double worldZ READ worldZ NOTIFY changed)
 public:
     explicit GroundLink(QObject *parent = nullptr);
+    ~GroundLink() override;
     QVariantMap mission() const { return m_mission; }
     bool remoteAvailable() const { return m_connected && m_protocol == 2 && !m_mission.isEmpty(); }
     bool busy() const { return !m_pending.isEmpty(); }
