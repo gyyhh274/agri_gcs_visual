@@ -27,6 +27,7 @@
 
 协议帧：55 66 | control | len(2,LE) | seq(2,LE) | cmd(1) | payload | crc16(2,LE)
 """
+import argparse
 import binascii
 import http.server
 import select
@@ -146,6 +147,29 @@ def start_http_proxy():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="SIYI A8 mini 云台/媒体中转")
+    parser.add_argument("--no-http", action="store_true",
+                        help="不启动 HTTP 媒体代理（只做云台 UDP 转发）")
+    parser.add_argument("--http-only", action="store_true",
+                        help="只启动 HTTP 媒体代理（照片/录像文件），不做 UDP 转发")
+    args = parser.parse_args()
+
+    # ⚠️ 为什么要把 HTTP 代理拆出去单独跑一个进程：
+    # 照片/录像下载是几十 MB 的流量，如果和云台 UDP 转发挤在同一个 Python
+    # 进程里，HTTP 线程会抢 GIL，把转发主循环拖住 —— 表现为"一点图片列表，
+    # 云台操作杆就延迟极大"（2026-10-15 实际复现）。
+    # 拆成两个进程后，下载再重也不影响云台指令的实时性。
+    if args.http_only:
+        start_http_proxy()
+        log("HTTP-only 模式：只提供照片/录像文件代理，不转发云台指令")
+        log("  监听 %s:%d → %s" % (PROXY_ADDR[0], PROXY_ADDR[1], CAM_HTTP))
+        try:
+            while True:
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            pass
+        return
+
     downstream = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     downstream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     downstream.bind(LISTEN_ADDR)
@@ -169,12 +193,15 @@ def main():
     log("  安全策略: 丢弃 CMD 0x00（心跳，UDP 不支持）")
     log("  安全策略: CMD 0x07 转向死手保护 %.1f 秒（地面站失联自动停转）"
         % ROTATE_DEADMAN_SEC)
-    try:
-        start_http_proxy()
-        log("  HTTP 代理 %s:%d → %s（照片/视频文件接口，只读）"
-            % (PROXY_ADDR[0], PROXY_ADDR[1], CAM_HTTP))
-    except OSError as error:
-        log("!! HTTP 代理启动失败（端口被占用？）: %s" % error)
+    if args.no_http:
+        log("  媒体代理: 已禁用（--no-http，由独立的 siyi-media-proxy 服务提供）")
+    else:
+        try:
+            start_http_proxy()
+            log("  HTTP 代理 %s:%d → %s（照片/视频文件接口，只读）"
+                % (PROXY_ADDR[0], PROXY_ADDR[1], CAM_HTTP))
+        except OSError as error:
+            log("!! HTTP 代理启动失败（端口被占用？）: %s" % error)
 
     while True:
         readable, _, _ = select.select([downstream, upstream], [], [], 0.2)

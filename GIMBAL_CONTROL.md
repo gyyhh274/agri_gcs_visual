@@ -406,6 +406,7 @@ gimbalLink.refreshStatus() / refreshAttitude() / softReboot()
 | **图传+云台+照片全不通**（视频报 `Could not open resource for reading`） | **机载电脑 IP 变了**（DHCP 重新分配；旧 IP 可能已被别的设备占用） | 在局域网扫 8554/37260 端口找出真正地址（见下） | 「系统设置 → 连接设置 → 机载电脑」改成新 IP，点「拉流」 |
 | **云台频繁断连/时好时坏，但视频一直正常** | **机载电脑 Wi-Fi 省电模式**（网卡空闲休眠，首包延迟数百 ms；UDP 无重传 → 云台指令大量超时，TCP 视频有重传所以没事） | 机载电脑上 `iw dev wlan0 get power_save` | 关闭省电：`sudo iw dev wlan0 set power_save off`，并持久化（见下） |
 | 云台偶发断连（Wi-Fi 正常） | 单条命令漏答被误判为断连（旧版本问题，已修） | — | 已改为按时间判活（4 秒无任何回复才算断连） |
+| **切到「图片列表」后视频剧烈抖动、拨杆延迟极高**（且离开该页也不恢复） | 缩略图**按原图分辨率解码**：相机照片 2560×1440 → 每张解码位图 14.1 MB，16 张 = 225 MB；再叠加 `cache:false`，**每次重绘都重新上传纹理**，把虚拟 GPU 管线打满。视频画面走同一条渲染管线，所以一起卡 | 看应用内存：切到图片列表 RSS 从 414 MB 涨到 618 MB；系统 CPU 却只有 ~21%（瓶颈在 GPU/合成，不在 CPU） | QML `Image` 必须设 `sourceSize`（按显示尺寸解码）+ `cache: true`。修好后 RSS 261 MB |
 | 拨杆推着不动 | 相机在限位（yaw ±135 / pitch −90~25） | 看面板角度是否已到边界 | 属正常限位；往反方向推 |
 | 拨杆左右方向反了 | 被"回报角度"误导而加了取反 | 看**画面**移动方向，别只看角度 | 去掉 `flushRotate()` 里的取反（见 §4.2） |
 | 松手后云台还在转 | 停止包丢失 / 地面站异常退出 | 中转日志有无「死手保护触发」 | 1 秒内会自动停；再点「回中」复位 |
@@ -470,17 +471,54 @@ done
 **处置**（在机载电脑上执行）：
 
 ```bash
-# 立即生效
+# 1) 立即生效
 sudo iw dev wlan0 set power_save off
 
-# 持久化（重启后仍生效）
+# 2) 配置持久化：用 zz- 前缀确保字母序排在系统默认文件之后
 sudo mkdir -p /etc/NetworkManager/conf.d
-printf '[connection]\nwifi.powersave = 2\n' | sudo tee /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+printf '[connection]\nwifi.powersave = 2\n' \
+  | sudo tee /etc/NetworkManager/conf.d/zz-wifi-powersave-off.conf
+sudo systemctl reload NetworkManager
 
 # 复核
 iw dev wlan0 get power_save     # 应显示 Power save: off
 iwconfig wlan0 | grep Power     # 应显示 Power Management:off
 ```
+
+> ⚠️ **只写配置文件不够 —— 这个设置会被重置**。
+> 2026-10-15 实际遇到：先写好 conf 并生效过（延迟 480ms → 5ms），
+> 几小时后再测发现 `power_save` 又变回 `on`，而且**写的 conf 文件不见了**，
+> 只剩系统自带的 `default-wifi-powersave-on.conf`（`wifi.powersave = 3` = 启用省电）。
+>
+> 所以必须再加一层 **systemd 常驻保险**（开机/重连/唤醒后都会自动关）：
+
+```bash
+sudo tee /etc/systemd/system/wifi-powersave-off.service >/dev/null <<'EOF'
+[Unit]
+Description=Disable Wi-Fi power saving on wlan0
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/iw dev wlan0 set power_save off
+ExecReload=/sbin/iw dev wlan0 set power_save off
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now wifi-powersave-off.service
+```
+
+**省电模式打开时的连带现象**（便于识别）：
+
+| 现象 | 原因 |
+| --- | --- |
+| 云台一直"重连中" | 延迟 300~900ms → UDP 指令大量超时 |
+| 图传绿色花屏 | 高延迟抖动 → TCP 重传 → H.265 丢帧 |
+| **自动发现扫不到机载电脑** | 探测超时 450ms < 实际延迟 → 全部超时（已把超时放宽到 900ms 并加"先试已知地址"的快路径） |
 
 > 排查时**一定要先把地面站停掉再测**：相机与中转都是单客户端模型，
 > 用脚本测的同时应用还在轮询，两者会互相截胡应答，

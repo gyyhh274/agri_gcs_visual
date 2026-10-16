@@ -652,7 +652,9 @@ Item {
                         width: 106; height: 106
                         readonly property real throwRadius: 34
                         readonly property real knobRadius: 13
-                        readonly property real deadZone: 0.10      // 中心死区，避免手抖
+                        readonly property real deadZone: 0.06      // 中心死区，避免手抖
+                                                                   // （原 0.10：小幅度推杆
+                                                                   //   直接归零，手感"推了不动"）
                         property real nx: 0                        // -1..1，右为正
                         property real ny: 0                        // -1..1，上为正
                         property bool dragging: false
@@ -737,9 +739,11 @@ Item {
                             onReleased: joy.release()
                             onCanceled: joy.release()
                         }
-                        // 持续上报杆量（20Hz）：相机不会自己保持，需要流式下发
+                        // 持续上报杆量（30Hz）：相机不会自己保持，需要流式下发。
+                        // 杆量【变化】时 apply() 已经立即下发，这个定时器只做保活，
+                        // 所以间隔不必太短；原来 50ms 在松手/静止时也无所谓。
                         Timer {
-                            interval: 50; repeat: true; running: joy.dragging
+                            interval: 33; repeat: true; running: joy.dragging
                             onTriggered: gimbalLink.setRotateRate(joy.yawRate, joy.pitchRate)
                         }
                         // 安全兜底 1：丢过鼠标抬起事件时强制回中（按 Qt 的真实按键状态判断）
@@ -1061,7 +1065,18 @@ Item {
                                 width: 123; height: 76; color: "#0a1c2b"; border.color: "#1d3b52"
                                 Image {
                                     anchors.fill: parent; anchors.margins: 1
-                                    asynchronous: true; cache: false
+                                    asynchronous: true
+                                    /* ⚠️ 这两行是性能关键，别删：
+                                     * 相机照片是 2560×1440，而这里只显示 121×74。
+                                     * 不设 sourceSize 就会按【全分辨率】解码成纹理
+                                     * （每张 14.1 MB），16 张 = 225 MB；
+                                     * 再叠加 cache:false 每次重绘都重新上传，
+                                     * 直接把虚拟 GPU 管线打满 —— 表现是"切到图片列表
+                                     * 之后视频剧烈抖动、拨杆延迟极高"（2026-10-15 实测）。
+                                     * 按显示尺寸解码后每张约 0.14 MB，差 100 倍。 */
+                                    sourceSize.width: 240
+                                    sourceSize.height: 152
+                                    cache: true
                                     fillMode: Image.PreserveAspectCrop
                                     source: entry.ready ? entry.localPath : ""
                                 }

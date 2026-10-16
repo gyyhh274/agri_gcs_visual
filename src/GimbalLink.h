@@ -150,7 +150,7 @@ private:
      * 不要按"某条命令失败"判连 —— 相机会漏答个别命令（尤其 0x19），
      * 那样界面会反复闪"云台离线"（用户反馈的"一直在断连"）。 */
     static constexpr qint64 kLinkIdleMs = 4000;
-    static constexpr int kRotateFlushMs = 45;    // 拨杆指令合并到约 22 Hz
+    static constexpr int kRotateFlushMs = 20;    // 拨杆指令合并到约 50 Hz
     static constexpr qint64 kRotateDeadmanMs = 500; // 超过这个时间没有新杆量就自动停止
 
     static quint16 crc16Ccitt(const QByteArray &data);

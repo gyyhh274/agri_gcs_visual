@@ -460,12 +460,21 @@ void GimbalLink::setRotateRate(int yawRate, int pitchRate)
     const int yaw = std::max(-100, std::min(100, yawRate));
     const int pitch = std::max(-100, std::min(100, pitchRate));
     m_lastRotateInputMs = nowMs();
+    const bool wasIdle = m_rotateIdle;
     m_rotateIdle = false;
     if (yaw == m_pendingYawRate && pitch == m_pendingPitchRate && m_rotateDirty)
         return;                       // 已经有同样的值在等待下发
     m_pendingYawRate = yaw;
     m_pendingPitchRate = pitch;
     m_rotateDirty = true;
+    /* 从"没在转"变成"开始转"时立刻下发，不等合并定时器。
+     * 否则按下拨杆后最长要等一个 kRotateFlushMs 才有第一条指令，
+     * 手感上就是"推了没反应"。 */
+    if (wasIdle) {
+        flushRotate();
+        m_rotateTimer.start();
+        return;
+    }
     if (!m_rotateTimer.isActive())
         m_rotateTimer.start();
 }
