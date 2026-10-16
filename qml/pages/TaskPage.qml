@@ -17,11 +17,28 @@ Item {
     property string uploadedLocalJson: ""
     property string uploadedMissionId: ""
     property int uploadedMissionRevision: 0
+    property string uploadedSession: ""
     property string pendingUploadJson: ""
     property string pendingUploadRequest: ""
+    property string pendingUploadSession: ""
+    property string pendingUpdateJson: ""
+    property string pendingUpdateRequest: ""
+    property string pendingUpdateMissionId: ""
+    property string pendingUpdateSession: ""
+    property int pendingUpdateRevision: 0
     readonly property bool missionActive: groundLink.remoteAvailable && ["FLYING", "HOVERING", "LANDING"].indexOf(groundLink.mission.state) >= 0
-    readonly property bool localEditable: !groundLink.busy && !missionActive
-    readonly property bool routeMatches: uploadedLocalJson.length > 0 && uploadedLocalJson === localJson()
+    readonly property bool confirmedRoute: groundLink.remoteAvailable && uploadedLocalJson.length > 0 &&
+        uploadedSession === groundLink.mission.map_session_id && uploadedMissionId === groundLink.mission.mission_id &&
+        uploadedMissionRevision === groundLink.mission.revision
+    readonly property bool dynamicEditable: confirmedRoute && reviewedSession === groundLink.mission.map_session_id &&
+        ["FLYING", "HOVERING"].indexOf(groundLink.mission.state) >= 0
+    readonly property bool localEditable: !groundLink.busy && (!missionActive || dynamicEditable)
+    readonly property bool localReplaceable: !groundLink.busy && !missionActive
+    readonly property int lockedPrefixCount: missionActive ? Math.min(groundLink.mission.total,
+        groundLink.mission.state === "LANDING" ? groundLink.mission.total : groundLink.mission.completed + 1) : 0
+    readonly property bool routeMatches: confirmedRoute && uploadedLocalJson === localJson()
+    readonly property bool canUpdateLocal: indoorMode && !groundLink.busy && dynamicEditable &&
+        firstLocalChange() >= lockedPrefixCount
     readonly property bool canStartLocal: indoorMode && routeMatches && groundLink.remoteAvailable && !groundLink.busy &&
         groundLink.mission.state === "READY" && groundLink.mission.flight_ready && reviewedSession === groundLink.mission.map_session_id &&
         uploadedMissionId === groundLink.mission.mission_id && uploadedMissionRevision === groundLink.mission.revision
@@ -56,17 +73,51 @@ Item {
         localSelected = localWaypoints.count - 1; localRevision++
     }
     function moveLocal(index, x, y) {
-        if (!localEditable || index < 0 || index >= localWaypoints.count || !validLocal(x, y, 1, 2)) return
+        if (!canEditLocal(index) || !validLocal(x, y, 1, 2)) return
         localWaypoints.setProperty(index, "x", Number(x.toFixed(2)))
         localWaypoints.setProperty(index, "y", Number(y.toFixed(2)))
         localSelected = index; localRevision++
+    }
+    function canEditLocal(index) {
+        return localEditable && index >= lockedPrefixCount && index >= 0 && index < localWaypoints.count
+    }
+    function removeLocal(index) {
+        if (!canEditLocal(index)) return
+        localWaypoints.remove(index)
+        localSelected = Math.min(localSelected, localWaypoints.count - 1); localRevision++
+    }
+    function firstLocalChange() {
+        if (!uploadedLocalJson.length) return -1
+        var previous = JSON.parse(uploadedLocalJson), draft = JSON.parse(localJson())
+        for (var i = 0; i < Math.max(previous.length, draft.length); ++i)
+            if (JSON.stringify(previous[i]) !== JSON.stringify(draft[i])) return i
+        return -1
+    }
+    function discardLocalChanges() {
+        if (!confirmedRoute || groundLink.busy) return
+        var points = JSON.parse(uploadedLocalJson)
+        localWaypoints.clear()
+        for (var i = 0; i < points.length; ++i) {
+            var p = points[i]; localWaypoints.append({x: p.x, y: p.y, z: p.z, hover_sec: p.hover_sec})
+        }
+        localSelected = Math.min(localSelected, localWaypoints.count - 1); localRevision++
+    }
+    function localDraftStatus() {
+        if (!groundLink.remoteAvailable) return "等待机载连接；本地编辑尚未发送"
+        if (pendingUpdateRequest.length) return "更新已发送，等待机载确认；当前路段继续执行"
+        if (missionActive && !confirmedRoute) return "仅查看机载进度；本地航线版本尚未确认，不能更新"
+        var first = firstLocalChange()
+        if (missionActive && first >= 0 && first < lockedPrefixCount)
+            return "草稿中的航点已进入执行，请先撤销草稿，再编辑后续航点"
+        if (missionActive) return first >= 0 ? "后续航点已修改，点击更新后续航点后生效" : "已完成及当前执行点锁定，可编辑或追加后续航点"
+        return routeMatches ? "当前航线已获机载确认" : "本地草稿；上传并获得机载确认后生效"
     }
     function saveLocal() {
         localStore.setValue("routeJson", localJson()); localStore.sync()
         actionMessage("局部航线已保存；定位重启后需重新核对坐标")
     }
     function importLocal(text) {
-        if (!localEditable) return
+        if (!localReplaceable) return
         try {
             var points = JSON.parse(text)
             if (!Array.isArray(points) || points.length > 200) throw new Error("航点数量应为 0–200")
@@ -83,45 +134,76 @@ Item {
                 p = points[i]; localWaypoints.append({x: p.x, y: p.y, z: p.z, hover_sec: p.hover_sec})
             }
             localSelected = localWaypoints.count ? 0 : -1; localRevision++
-            uploadedLocalJson = ""; routeDialog.close()
+            routeDialog.close()
         } catch (error) { actionMessage("局部航线导入失败：" + error.message) }
     }
     function uploadLocal() {
-        if (!localEditable || !groundLink.remoteAvailable || reviewedSession !== groundLink.mission.map_session_id) {
+        if (!localReplaceable || !groundLink.remoteAvailable || reviewedSession !== groundLink.mission.map_session_id) {
             actionMessage("请连接机载任务网关，核对本次定位会话的原点和方向，再勾选确认")
             return
         }
         pendingUploadJson = localJson()
+        pendingUploadSession = reviewedSession
         pendingUploadRequest = groundLink.uploadLocalRoute(JSON.parse(pendingUploadJson), reviewedSession)
+    }
+    function updateLocal() {
+        if (!canUpdateLocal) { actionMessage("请核对定位会话，仅修改尚未执行的后续航点；有草稿冲突时先撤销草稿"); return }
+        var replaceFrom = firstLocalChange()
+        pendingUpdateJson = localJson()
+        pendingUpdateMissionId = uploadedMissionId
+        pendingUpdateSession = uploadedSession
+        pendingUpdateRevision = uploadedMissionRevision + 1
+        pendingUpdateRequest = groundLink.updateLocalRoute(JSON.parse(pendingUpdateJson).slice(replaceFrom),
+            replaceFrom, uploadedMissionId, pendingUpdateRevision, reviewedSession)
     }
     function startLocal() {
         if (!canStartLocal) { actionMessage("请上传当前航线，并等待机载起飞悬停及任务就绪"); return }
         groundLink.startUploadedMission(groundLink.mission.mission_id, groundLink.mission.revision, reviewedSession)
     }
     function localPointState(index) {
-        if (!routeMatches || !groundLink.remoteAvailable) return "本地编辑"
+        if (!confirmedRoute) return "本地编辑"
+        var draft = JSON.parse(localJson()), previous = JSON.parse(uploadedLocalJson)
+        if (JSON.stringify(draft[index]) !== JSON.stringify(previous[index])) return index < lockedPrefixCount ? "草稿冲突" : "待更新"
         if (index < groundLink.mission.completed) return "已完成"
         if (groundLink.mission.state === "FAILED") return "任务异常"
         if (missionActive && index + 1 === groundLink.mission.current_waypoint_id) return groundLink.mission.state === "HOVERING" ? "到点悬停" : "执行中"
         return "待执行"
     }
+    function clearConfirmedRoute() {
+        uploadedLocalJson = ""; uploadedMissionId = ""; uploadedMissionRevision = 0; uploadedSession = ""
+    }
+    function handleMissionChanged() {
+        if (!groundLink.remoteAvailable) { reviewedSession = ""; return }
+        if (reviewedSession !== groundLink.mission.map_session_id) reviewedSession = ""
+        // changed precedes commandFinished for ACKs. Preserve the baseline until the matching update ACK arrives.
+        var awaitingRevision = pendingUpdateRequest.length && pendingUpdateSession === groundLink.mission.map_session_id &&
+            pendingUpdateMissionId === groundLink.mission.mission_id && pendingUpdateRevision === groundLink.mission.revision
+        if (uploadedMissionId.length && !confirmedRoute && !awaitingRevision) clearConfirmedRoute()
+    }
+    function finishLocalCommand(requestId, operation, accepted) {
+        if (operation === "upload" && requestId === pendingUploadRequest) {
+            if (accepted && groundLink.remoteAvailable && pendingUploadSession === groundLink.mission.map_session_id && groundLink.mission.revision === 1) {
+                uploadedLocalJson = pendingUploadJson; uploadedMissionId = groundLink.mission.mission_id
+                uploadedMissionRevision = groundLink.mission.revision; uploadedSession = pendingUploadSession
+            } else clearConfirmedRoute()
+            pendingUploadRequest = ""
+        }
+        if (operation === "update" && requestId === pendingUpdateRequest) {
+            if (accepted && groundLink.remoteAvailable && pendingUpdateSession === groundLink.mission.map_session_id &&
+                    pendingUpdateMissionId === groundLink.mission.mission_id && pendingUpdateRevision === groundLink.mission.revision) {
+                uploadedLocalJson = pendingUpdateJson; uploadedMissionId = pendingUpdateMissionId
+                uploadedMissionRevision = pendingUpdateRevision; uploadedSession = pendingUpdateSession
+            }
+            pendingUpdateRequest = ""
+            handleMissionChanged()
+        }
+    }
     Connections {
         target: groundLink
         function onNotified(text) { page.actionMessage(text) }
-        function onChanged() {
-            if (!groundLink.remoteAvailable || page.reviewedSession !== groundLink.mission.map_session_id) {
-                page.reviewedSession = ""; page.uploadedLocalJson = ""; page.uploadedMissionId = ""; page.uploadedMissionRevision = 0
-            } else if (page.uploadedMissionId.length && (page.uploadedMissionId !== groundLink.mission.mission_id || page.uploadedMissionRevision !== groundLink.mission.revision)) {
-                page.uploadedLocalJson = ""; page.uploadedMissionId = ""; page.uploadedMissionRevision = 0
-            }
-        }
+        function onChanged() { page.handleMissionChanged() }
         function onCommandFinished(requestId, operation, accepted, reason) {
-            if (operation === "upload" && requestId === page.pendingUploadRequest) {
-                page.uploadedLocalJson = accepted ? page.pendingUploadJson : ""
-                page.uploadedMissionId = accepted ? groundLink.mission.mission_id : ""
-                page.uploadedMissionRevision = accepted ? groundLink.mission.revision : 0
-                page.pendingUploadRequest = ""
-            }
+            page.finishLocalCommand(requestId, operation, accepted)
             var text = (accepted ? "机载已确认 " : "机载未确认 ") + operation + " · " + reason
             page.actionMessage(text)
             liveLogs.insert(0, {time: Qt.formatTime(new Date(), "hh:mm:ss"), type: "任务", module: "机载", content: text})
@@ -419,7 +501,7 @@ Item {
                     }
                     Row { width: parent.width; Text { text: "航点进度"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: groundLink.remoteAvailable ? groundLink.mission.completed + " / " + groundLink.mission.total : "—"; width: 120; color: "#dce9f7"; font.pixelSize: 13 } Text { width: 44; horizontalAlignment: Text.AlignRight; text: groundLink.remoteAvailable && groundLink.mission.total > 0 ? Math.round(groundLink.mission.completed / groundLink.mission.total * 100) + "%" : "—"; color: "#dce9f7"; font.pixelSize: 13 } }
                     Rectangle { width: parent.width; height: 13; radius: 6; color: "#143149"; Rectangle { width: groundLink.remoteAvailable && groundLink.mission.total > 0 ? parent.width * groundLink.mission.completed / groundLink.mission.total : 0; height: parent.height; radius: 6; color: "#087dff" } }
-                    Row { width: parent.width; Text { text: "预计总时长"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: "按机载执行进度更新"; color: "#dce9f7"; font.pixelSize: 13 } }
+                    Row { width: parent.width; Text { text: "机载版本"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: groundLink.remoteAvailable ? "v" + groundLink.mission.revision + " · 当前航点 " + (groundLink.mission.current_waypoint_id || "—") : "—"; color: "#dce9f7"; font.pixelSize: 13 } }
                     Grid {
                         width: parent.width; columns: 2; spacing: 8
                         GButton { width: 119; height:36; text: "开始任务"; icon: "▶"; fill: "#00b968"; hoverFill: "#00d079"; enabled: page.canStartLocal; onClicked: page.startLocal() }
@@ -454,6 +536,10 @@ Item {
                 height: 450; visible: page.indoorMode
                 waypointModel: localWaypoints; selectedIndex: page.localSelected; routeRevision: page.localRevision
                 editingEnabled: page.localEditable
+                wholeRouteEditable: page.localReplaceable
+                lockedPrefixCount: page.lockedPrefixCount
+                completedCount: page.confirmedRoute ? groundLink.mission.completed : 0
+                activeIndex: page.confirmedRoute && page.missionActive ? groundLink.mission.completed : -1
                 defaultZ: page.defaultLocalZ
                 onDefaultZChanged: {
                     page.defaultLocalZ = defaultZ
@@ -463,6 +549,7 @@ Item {
                 onWaypointMoved: page.moveLocal(index, xMeters, yMeters)
                 onWaypointSelected: page.localSelected = index
                 onWaypointDoubleClicked: {
+                    if (!page.canEditLocal(index)) return
                     page.localSelected = index
                     var pt = localWaypoints.get(index)
                     localX.text = pt.x; localY.text = pt.y; localZ.text = pt.z; localHold.text = pt.hover_sec
@@ -499,9 +586,13 @@ Item {
                     }
                     Row {
                         anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                        GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "导入航线"; onClicked: { routeInput.text = page.indoorMode ? page.localJson() : page.savedRouteJson() || page.routeJson(); routeDialog.open() } }
+                        GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "导入航线"; enabled: !page.indoorMode || page.localReplaceable; onClicked: { routeInput.text = page.indoorMode ? page.localJson() : page.savedRouteJson() || page.routeJson(); routeDialog.open() } }
                         GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "保存航线"; onClicked: page.indoorMode ? page.saveLocal() : page.saveRoute() }
-                        GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "上传航线"; enabled: page.indoorMode && page.localEditable && groundLink.remoteAvailable; onClicked: page.uploadLocal() }
+                        GButton { objectName: "localRouteSendButton"; visible: page.contentTab === 0; width: page.missionActive ? 112 : 92; height: 34
+                            text: page.missionActive ? "更新后续航点" : "上传航线"
+                            enabled: page.missionActive ? page.canUpdateLocal : page.indoorMode && page.localReplaceable && groundLink.remoteAvailable
+                            onClicked: page.missionActive ? page.updateLocal() : page.uploadLocal()
+                        }
                     }
                 }
                 Loader { anchors.left: parent.left; anchors.right: parent.right; anchors.top: tabs.bottom; anchors.bottom: parent.bottom; sourceComponent: page.contentTab === 0 ? (page.indoorMode ? localWaypointView : waypointView) : page.contentTab === 1 ? logView : page.contentTab === 2 ? photoView : videoView }
@@ -804,7 +895,7 @@ Item {
                 CheckBox {
                     objectName: "localSessionReview"
                     checked: groundLink.remoteAvailable && page.reviewedSession === groundLink.mission.map_session_id
-                    enabled: groundLink.remoteAvailable && page.localEditable
+                    enabled: groundLink.remoteAvailable && !groundLink.busy
                     text: "已核对本次定位原点、X/Y方向和Z高度"
                     contentItem: Text { text: parent.text; color: "#c6dfeb"; leftPadding: parent.indicator.width + 6; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12 }
                     onClicked: page.reviewedSession = checked ? groundLink.mission.map_session_id : ""
@@ -813,7 +904,16 @@ Item {
                 Text { text: groundLink.remoteAvailable ? "Z范围 " + groundLink.mission.min_z + "–" + groundLink.mission.max_z + "m" : "连接设置 → 127.0.0.1:8765"; color: "#91adc3"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
             }
             Rectangle {
-                x: 0; y: 44; width: parent.width; height: 32; color: "#0a2234"
+                x: 0; y: 42; width: parent.width; height: 30; color: "#092337"
+                Text { anchors.left: parent.left; anchors.leftMargin: 8; anchors.right: discardDraft.left; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                    text: page.localDraftStatus(); color: page.routeMatches ? "#8edbb9" : "#ffd18b"; font.pixelSize: 12; elide: Text.ElideRight
+                }
+                GButton { id: discardDraft; objectName: "localDiscardDraftButton"; anchors.right: parent.right; anchors.rightMargin: 8; height: 28; width: 88
+                    text: "撤销草稿"; enabled: page.confirmedRoute && !page.routeMatches && !groundLink.busy; onClicked: page.discardLocalChanges()
+                }
+            }
+            Rectangle {
+                x: 0; y: 74; width: parent.width; height: 32; color: "#0a2234"
                 Row {
                     Repeater { model: [["序号", 52], ["X (m)", 110], ["Y (m)", 110], ["Z 局部高度 (m)", 130], ["悬停 (s)", 100], ["状态", 120], ["操作", 150]]
                         delegate: Text { width: modelData[1]; height: 32; text: modelData[0]; color: "#9fb4c8"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -822,7 +922,7 @@ Item {
             }
             ListView {
                 objectName: "localWaypointList"
-                x: 0; y: 76; width: parent.width; height: parent.height - y; model: localWaypoints; clip: true
+                x: 0; y: 106; width: parent.width; height: parent.height - y; model: localWaypoints; clip: true
                 Text { anchors.centerIn: parent; visible: localWaypoints.count === 0; text: "点击添加航点，再在网格选点 · 默认 Z=" + page.defaultLocalZ.toFixed(1) + "m，可在上方或表格修改"; color: "#91adc3"; font.pixelSize: 13 }
                 delegate: Rectangle {
                     id: localRow
@@ -839,13 +939,10 @@ Item {
                             model: [[index + 1, 52], [localRow.pointX.toFixed(2), 110], [localRow.pointY.toFixed(2), 110], [localRow.pointZ.toFixed(2), 130], [localRow.pointHold, 100], [page.localPointState(index), 120]]
                             delegate: Text { width: modelData[1]; height: 35; text: modelData[0]; color: "#dce9f7"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
-                        GButton { text: "编辑"; height: 31; width: 65; enabled: page.localEditable; onClicked: {
+                        GButton { text: "编辑"; height: 31; width: 65; enabled: page.canEditLocal(index); onClicked: {
                             page.localSelected = index; localX.text = localRow.pointX; localY.text = localRow.pointY; localZ.text = localRow.pointZ; localHold.text = localRow.pointHold; localEdit.open()
                         } }
-                        GButton { text: "删除"; height: 31; width: 65; enabled: page.localEditable; onClicked: {
-                            if (!page.localEditable) return
-                            localWaypoints.remove(index); page.localSelected = Math.min(page.localSelected, localWaypoints.count - 1); page.localRevision++
-                        } }
+                        GButton { text: "删除"; height: 31; width: 65; enabled: page.canEditLocal(index); onClicked: page.removeLocal(index) }
                     }
                 }
             }
@@ -864,7 +961,7 @@ Item {
             Row { Text { text: "悬停 (s)"; width: 95; color: "white" } GField { id: localHold; width: 270 } }
             GButton { text: "保存"; fill: "#087dff"; onClicked: {
                 var px = Number(localX.text), py = Number(localY.text), pz = Number(localZ.text), hold = Number(localHold.text)
-                if (!page.localEditable || page.localSelected < 0 || !localX.text.trim().length || !localY.text.trim().length || !localZ.text.trim().length || !localHold.text.trim().length || !page.validLocal(px, py, pz, hold)) {
+                if (!page.canEditLocal(page.localSelected) || !localX.text.trim().length || !localY.text.trim().length || !localZ.text.trim().length || !localHold.text.trim().length || !page.validLocal(px, py, pz, hold)) {
                     page.actionMessage("请输入有效的局部坐标和 0–60 秒悬停时间"); return
                 }
                 localWaypoints.set(page.localSelected, {x: px, y: py, z: pz, hover_sec: hold})
@@ -1222,7 +1319,7 @@ Item {
         contentItem: Text { text: "将清空当前编辑航点；不会清除飞控任务。\n保存后才会覆盖已保存的本地航线。"; color: "#203040"; wrapMode: Text.WordWrap }
         onAccepted: {
             if (page.indoorMode) {
-                if (!page.localEditable) return
+                if (!page.localReplaceable) return
                 localWaypoints.clear(); page.localSelected = -1; page.localRevision++
             } else page.clearRoute()
         }

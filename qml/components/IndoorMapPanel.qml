@@ -9,6 +9,10 @@ Rectangle {
     property int selectedIndex: -1
     property int routeRevision: 0
     property bool editingEnabled: true
+    property bool wholeRouteEditable: true
+    property int lockedPrefixCount: 0
+    property int completedCount: 0
+    property int activeIndex: -1
     property bool adding: false
     property real pixelsPerMeter: 30
     property real centerX: 0
@@ -48,6 +52,8 @@ Rectangle {
     onCenterYChanged: grid.requestPaint()
     onSelectedIndexChanged: grid.requestPaint()
     onRouteRevisionChanged: grid.requestPaint()
+    onCompletedCountChanged: grid.requestPaint()
+    onActiveIndexChanged: grid.requestPaint()
     onWidthChanged: grid.requestPaint()
     onHeightChanged: grid.requestPaint()
     Connections { target: groundLink; function onChanged() { grid.requestPaint() } }
@@ -87,7 +93,7 @@ Rectangle {
                 for (i = 0; i < root.waypointModel.count; ++i) {
                     row = root.waypointModel.get(i); point = root.pointFor(row.x, row.y)
                     c.beginPath(); c.arc(point.x, point.y, i === root.selectedIndex ? 12 : 9, 0, Math.PI * 2)
-                    c.fillStyle = i === root.selectedIndex ? "#ffe087" : "#ffab45"; c.fill()
+                    c.fillStyle = i === root.selectedIndex ? "#ffe087" : i < root.completedCount ? "#6f8c9b" : i === root.activeIndex ? "#54d8ed" : "#ffab45"; c.fill()
                     c.fillStyle = "#081a29"; c.font = "bold 12px sans-serif"; c.fillText(String(i + 1), point.x - 4, point.y + 4)
                     c.font = "11px sans-serif"; c.fillStyle = "#d7e9f3"; c.fillText("Z " + Number(row.z).toFixed(1) + "m", point.x + 14, point.y - 10)
                 }
@@ -117,7 +123,7 @@ Rectangle {
             if (Math.abs(mouse.x - downX) + Math.abs(mouse.y - downY) > 5) moved = true
             if (!moved) return
             if (dragIndex >= 0) {
-                if (root.editingEnabled) {
+                if (root.editingEnabled && dragIndex >= root.lockedPrefixCount) {
                     var at = root.coordinateAt(mouse.x, mouse.y)
                     root.waypointMoved(dragIndex, at.x, at.y)
                 }
@@ -128,7 +134,7 @@ Rectangle {
         }
         onDoubleClicked: {
             var hit = root.hitWaypoint(mouse.x, mouse.y)
-            if (hit >= 0) root.waypointDoubleClicked(hit)
+            if (root.editingEnabled && hit >= root.lockedPrefixCount && hit >= 0) root.waypointDoubleClicked(hit)
         }
         onReleased: {
             if (!moved && dragIndex < 0 && root.adding && root.editingEnabled) {
@@ -170,7 +176,7 @@ Rectangle {
                 GButton { width: 45; height: 29; text: "−"; onClicked: root.zoomAt(1 / 1.3, root.width / 2, root.height / 2) }
                 GButton { width: 80; height: 29; text: "定位原点"; onClicked: { root.centerX = 0; root.centerY = 0 } }
                 GButton { width: 90; height: 29; text: "定位无人机"; enabled: groundLink.connected && groundLink.odomFresh; onClicked: { root.centerX = groundLink.worldX; root.centerY = groundLink.worldY } }
-                GButton { width: 80; height: 29; text: "清空航线"; enabled: root.editingEnabled; onClicked: root.clearRequested() }
+                GButton { width: 80; height: 29; text: "清空航线"; enabled: root.wholeRouteEditable; onClicked: root.clearRequested() }
                 GButton { width: 100; height: 29; text: "切到室外地图"; onClicked: root.outdoorRequested() }
             }
         }

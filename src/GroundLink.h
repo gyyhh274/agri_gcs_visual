@@ -33,6 +33,8 @@ public:
     bool remoteAvailable() const { return m_connected && m_protocol == 2 && !m_mission.isEmpty(); }
     bool busy() const { return !m_pending.isEmpty(); }
     Q_INVOKABLE QString uploadLocalRoute(const QVariantList &waypoints, const QString &session);
+    Q_INVOKABLE QString updateLocalRoute(const QVariantList &suffix, int replaceFrom, const QString &missionId,
+                                        int revision, const QString &session);
     Q_INVOKABLE QString startUploadedMission(const QString &missionId, int revision, const QString &session);
     Q_INVOKABLE void queryMission();
     bool connected() const { return m_connected; }
@@ -57,7 +59,8 @@ signals:
     void commandFinished(const QString &requestId, const QString &operation, bool accepted, const QString &reason);
 private:
     QString sendCommand(const QString &operation, const QString &session, const QString &missionId,
-                        int revision, const QVariantList &waypoints = {});
+                        int revision, const QVariantList &waypoints = {}, int replaceFrom = 0);
+    bool validateWaypoints(const QVariantList &waypoints);
     bool consumeMission(const QJsonObject &object);
     void consumeLine(const QByteArray &line);
     void resetTelemetry();

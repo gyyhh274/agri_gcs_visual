@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QUuid>
 #include <QtGlobal>
+#include <QSet>
 #include <cmath>
 
 namespace {
@@ -211,7 +212,7 @@ bool GroundLink::consumeMission(const QJsonObject &object)
 }
 
 QString GroundLink::sendCommand(const QString &operation, const QString &session,
-                               const QString &missionId, int revision, const QVariantList &waypoints)
+                               const QString &missionId, int revision, const QVariantList &waypoints, int replaceFrom)
 {
     if (!remoteAvailable() || busy() || m_socket.state() != QAbstractSocket::ConnectedState) {
         emit notified(QStringLiteral("需要连接新版任务网关，并等待上一条命令确认"));
@@ -224,10 +225,11 @@ QString GroundLink::sendCommand(const QString &operation, const QString &session
     const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QJsonObject command{{"type", "command"}, {"protocol", 2}, {"request_id", id}, {"operation", operation},
                         {"map_session_id", session}, {"mission_id", missionId}, {"revision", revision}};
-    if (operation == "upload") {
+    if (operation == "upload" || operation == "update") {
         command.insert("frame_id", "world");
         command.insert("waypoints", QJsonArray::fromVariantList(waypoints));
     }
+    if (operation == "update") command.insert("replace_from", replaceFrom);
     const QByteArray frame = QJsonDocument(command).toJson(QJsonDocument::Compact) + '\n';
     if (frame.size() > kMaxFrameBytes || m_socket.write(frame) != frame.size()) {
         emit notified(QStringLiteral("命令未完整写入；请重连并查询机载状态"));
@@ -245,23 +247,54 @@ QString GroundLink::uploadLocalRoute(const QVariantList &waypoints, const QStrin
         emit notified(QStringLiteral("航点数量必须为 1–200"));
         return {};
     }
+    if (!validateWaypoints(waypoints)) return {};
+    return sendCommand("upload", session, QUuid::createUuid().toString(QUuid::WithoutBraces), 1, waypoints);
+}
+
+QString GroundLink::updateLocalRoute(const QVariantList &suffix, int replaceFrom, const QString &missionId,
+                                    int revision, const QString &session)
+{
+    const QString state = m_mission.value("state").toString();
+    const int total = m_mission.value("total").toInt();
+    if (!remoteAvailable() || (state != "FLYING" && state != "HOVERING") || missionId.isEmpty()
+            || missionId != m_mission.value("mission_id").toString()
+            || revision <= 1 || qint64(revision) != m_mission.value("revision").toLongLong() + 1
+            || replaceFrom <= m_mission.value("completed").toInt() || replaceFrom > total
+            || replaceFrom + suffix.size() > 200) {
+        emit notified(QStringLiteral("任务版本或执行进度已变化；只能更新当前执行点之后的航点，请查询机载状态"));
+        return {};
+    }
+    // An empty suffix deletes only future points; replaceFrom == total appends.
+    if (!validateWaypoints(suffix)) return {};
+    return sendCommand("update", session, missionId, revision, suffix, replaceFrom);
+}
+
+bool GroundLink::validateWaypoints(const QVariantList &waypoints)
+{
     const double xy = m_mission.value("max_abs_xy").toDouble();
     const double minZ = m_mission.value("min_z").toDouble(), maxZ = m_mission.value("max_z").toDouble();
+    QSet<quint32> ids;
     for (const QVariant &value : waypoints) {
         const QVariantMap point = value.toMap();
-        for (const char *key : {"x", "y", "z", "hover_sec"}) {
-            bool ok = false;
-            const double number = point.value(key).toDouble(&ok);
-            if (!ok || !std::isfinite(number)) { emit notified(QStringLiteral("航点包含无效数值")); return {}; }
+        for (const char *key : {"id", "x", "y", "z", "hover_sec"}) {
+            const QJsonValue number = QJsonValue::fromVariant(point.value(key));
+            if (!number.isDouble() || !std::isfinite(number.toDouble())) {
+                emit notified(QStringLiteral("航点包含无效数值")); return false;
+            }
         }
+        const double id = point.value("id").toDouble();
+        if (id < 1 || id > 4294967295.0 || std::floor(id) != id || ids.contains(quint32(id))) {
+            emit notified(QStringLiteral("航点 ID 必须为不重复的正整数")); return false;
+        }
+        ids.insert(quint32(id));
         if (std::abs(point.value("x").toDouble()) > xy || std::abs(point.value("y").toDouble()) > xy
                 || point.value("z").toDouble() < minZ || point.value("z").toDouble() > maxZ
                 || point.value("hover_sec").toDouble() < 0 || point.value("hover_sec").toDouble() > 60) {
             emit notified(QStringLiteral("航点超出机载配置范围；Z 应为 %1–%2 m").arg(minZ).arg(maxZ));
-            return {};
+            return false;
         }
     }
-    return sendCommand("upload", session, QUuid::createUuid().toString(QUuid::WithoutBraces), 1, waypoints);
+    return true;
 }
 
 QString GroundLink::startUploadedMission(const QString &missionId, int revision, const QString &session)
