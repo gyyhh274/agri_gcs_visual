@@ -180,11 +180,38 @@ ApplicationWindow {
             }
 
             Loader {
+                // Keep the task session alive: navigating away must not discard
+                // edited coordinates, coordinate review or pending command ACKs.
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: header.bottom
                 anchors.bottom: parent.bottom
-                sourceComponent: window.pageIndex === 0 ? taskPage : (window.pageIndex === 1 ? logPage : settingsPage)
+                visible: window.pageIndex === 0
+                sourceComponent: taskPage
+            }
+            Loader {
+                property bool loadedOnce: false
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: header.bottom
+                anchors.bottom: parent.bottom
+                active: window.pageIndex === 1 || loadedOnce
+                visible: window.pageIndex === 1
+                sourceComponent: logPage
+                onLoaded: loadedOnce = true
+            }
+            Loader {
+                // Retain the settings video surface too: the Qt5 GL sink can
+                // still have render jobs queued when a page is switched away.
+                property bool loadedOnce: false
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: header.bottom
+                anchors.bottom: parent.bottom
+                active: window.pageIndex === 2 || loadedOnce
+                visible: window.pageIndex === 2
+                sourceComponent: settingsPage
+                onLoaded: loadedOnce = true
             }
             Component { id: taskPage; TaskPage { objectName: "taskPage"; contentTab: window.previewTab; onRequestSettings: {window.previewSection=2;window.pageIndex=2} } }
             Component { id: logPage; LogPage { objectName: "logPage"; sectionIndex: Math.min(5, window.previewSection) } }

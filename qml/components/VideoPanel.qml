@@ -16,9 +16,10 @@ Rectangle {
     // 小缩略图（clean）保持静态占位，不额外拉一路流
     VideoStream {
         id: stream
+        objectName: "liveVideoStream"
         anchors.fill: parent
         visible: !root.clean
-        enabled: !root.clean
+        enabled: !root.clean && root.visible
     }
 
     // ── 占位图（未出画面时显示，避免面板空白）──────────────────

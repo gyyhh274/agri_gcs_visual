@@ -86,4 +86,12 @@ if(AGRI_GCS_BUILD_TESTS)
     add_executable(gimbal_link_test tests/tst_gimbal_link.cpp src/GimbalLink.cpp src/GimbalLink.h)
     target_link_libraries(gimbal_link_test PRIVATE Qt5::Core Qt5::Network Qt5::Test)
     add_test(NAME gimbal_link_test COMMAND gimbal_link_test)
+    add_executable(task_session_test tests/tst_task_session.cpp
+        src/AsyncTileMapItem.cpp src/OfflineMapSource.cpp src/NestPosition.cpp
+        src/AircraftProfile.cpp src/GroundLink.cpp src/GimbalLink.cpp
+        src/PhotoLibrary.cpp src/RelayDiscovery.cpp src/NativeVideoItem.cpp qml.qrc)
+    target_include_directories(task_session_test PRIVATE src)
+    target_link_libraries(task_session_test PRIVATE Qt5::Core Qt5::Gui Qt5::Qml
+        Qt5::Quick Qt5::QuickControls2 Qt5::Positioning Qt5::Concurrent Qt5::Network Qt5::Test)
+    add_test(NAME task_session_test COMMAND task_session_test)
 endif()

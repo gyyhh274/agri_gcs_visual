@@ -34,12 +34,14 @@ const localWaypoints = {
     setProperty(index, key, value) { rows[index][key] = value; }
 };
 const messages = [], sent = [];
+const stored = {};
 const context = vm.createContext({
     localWaypoints, localRevision: 0, localSelected: -1, indoorMode: true,
     reviewedSession: 'session-1', uploadedLocalJson: '', uploadedMissionId: '', uploadedMissionRevision: 0, uploadedSession: '',
     pendingUploadJson: '', pendingUploadRequest: '', pendingUploadSession: '',
     pendingUpdateJson: '', pendingUpdateRequest: '', pendingUpdateSession: '', pendingUpdateMissionId: '', pendingUpdateRevision: 0,
     routeDialog: {close() {}},
+    localStore: {setValue(key, value) { stored[key] = value; }, sync() {}},
     actionMessage(message) { messages.push(message); },
     groundLink: { remoteAvailable: true, busy: false,
         mission: {map_session_id: 'session-1', mission_id: 'demo', revision: 1, state: 'READY', completed: 0, total: 1, flight_ready: false},
@@ -52,14 +54,14 @@ context.page = context;
 const task = fs.readFileSync(path.join(__dirname, '../qml/pages/TaskPage.qml'), 'utf8');
 for (const name of ['validLocal', 'localJson', 'addLocal', 'moveLocal', 'importLocal', 'uploadLocal', 'startLocal',
     'canEditLocal', 'removeLocal', 'firstLocalChange', 'discardLocalChanges', 'localDraftStatus', 'updateLocal',
-    'localPointState', 'clearConfirmedRoute', 'handleMissionChanged', 'finishLocalCommand'])
+    'localPointState', 'clearConfirmedRoute', 'handleMissionChanged', 'finishLocalCommand', 'storeLocalRoute'])
     vm.runInContext(extract(task, name), context);
 // Evaluate the actual readonly QML bindings, including dependencies on live progress.
-for (const name of ['missionActive', 'confirmedRoute', 'dynamicEditable', 'localEditable', 'localReplaceable',
+for (const name of ['missionActive', 'landingLocked', 'confirmedRoute', 'dynamicEditable', 'localEditable', 'localReplaceable',
     'lockedPrefixCount', 'routeMatches', 'canUpdateLocal', 'canStartLocal']) {
     const match = new RegExp('readonly property (?:bool|int) ' + name + ': ([\\s\\S]*?)(?=\\n    (?:readonly property|Settings))').exec(task);
     assert(match, 'Missing binding ' + name);
-    Object.defineProperty(context, name, {get() { return vm.runInContext('(' + match[1] + ')', context); }});
+    Object.defineProperty(context, name, {get() { return vm.runInContext('(' + match[1] + '\n)', context); }});
 }
 function send(command) {
     command.request = 'request-' + (sent.length + 1); sent.push(command);
@@ -97,6 +99,7 @@ context.finishLocalCommand('unrelated', 'upload', true);
 assert(!context.confirmedRoute);
 ack(true);
 assert(context.routeMatches);
+assert.equal(stored.routeJson, context.uploadedLocalJson);
 context.startLocal(); assert.equal(sent.length, 1);
 context.groundLink.mission.flight_ready = true;
 context.startLocal(); assert.equal(sent.length, 2);
@@ -131,8 +134,10 @@ context.finishLocalCommand('unrelated', 'update', true);
 assert(context.pendingUpdateRequest.length);
 ack(false);
 assert(context.confirmedRoute && !context.routeMatches && context.canUpdateLocal);
+assert.equal(stored.routeJson, context.uploadedLocalJson); // Rejected drafts never replace the saved route.
 context.updateLocal(); ack(true, {revision: 2});
 assert(context.routeMatches); assert.equal(context.uploadedMissionRevision, 2);
+assert.equal(stored.routeJson, context.uploadedLocalJson);
 
 // Append and truncate use the first changed index, with an empty suffix for deletion.
 context.addLocal(4, 4); context.updateLocal();
@@ -176,6 +181,33 @@ assert(context.localDraftStatus().includes('尚未确认'));
 context.groundLink.mission.map_session_id = 'session-2'; context.handleMissionChanged();
 assert.equal(context.reviewedSession, ''); assert.equal(context.uploadedMissionId, '');
 
+// Landing retains the remote lock, while allowing an independent local draft.
+context.groundLink.mission.state = 'LANDING';
+assert(context.landingLocked && context.localEditable && context.localReplaceable);
+assert.equal(context.lockedPrefixCount, 0);
+assert(context.localDraftStatus().includes('本地航线'));
+const landingCount = rows.length, landingSent = sent.length;
+context.removeLocal(0); assert.equal(rows.length, landingCount - 1);
+context.importLocal('[]'); assert.equal(rows.length, 0);
+context.addLocal(1, 2); assert.equal(rows.length, 1);
+assert.equal(context.localPointState(0), '本地草稿');
+context.uploadLocal(); context.updateLocal(); context.startLocal();
+assert.equal(sent.length, landingSent); // Local deletion must never transmit a command.
+assert(!context.canUpdateLocal && !context.canStartLocal);
+context.groundLink.busy = true;
+context.removeLocal(0); context.importLocal('[]'); assert.equal(rows.length, 1);
+assert(!context.localEditable && !context.localReplaceable);
+context.groundLink.busy = false;
+context.uploadedLocalJson = context.localJson();
+context.uploadedMissionId = context.groundLink.mission.mission_id;
+context.uploadedMissionRevision = context.groundLink.mission.revision;
+context.uploadedSession = context.groundLink.mission.map_session_id;
+context.removeLocal(0); assert(!context.routeMatches);
+context.discardLocalChanges(); assert.equal(rows.length, 1); assert(context.routeMatches);
+Object.assign(context.groundLink.mission, {state: 'FLYING', completed: 0});
+assert(!context.localEditable && !context.localReplaceable); // Coordinate review still gates live edits.
+assert.equal(context.lockedPrefixCount, 1);
+
 const map = fs.readFileSync(path.join(__dirname, '../qml/components/IndoorMapPanel.qml'), 'utf8');
 const root = {width: 800, height: 450, centerX: 0, centerY: 0, pixelsPerMeter: 30};
 const mapContext = vm.createContext({root, Qt: {point(x, y) { return {x, y}; }}, Math});
@@ -191,4 +223,4 @@ const anchor = root.coordinateAt(500, 300);
 mapContext.zoomAt(1.3, 500, 300);
 const after = root.coordinateAt(500, 300);
 assert(Math.abs(anchor.x - after.x) < 1e-10 && Math.abs(anchor.y - after.y) < 1e-10);
-console.log('Indoor QML JavaScript checks passed: future edits/append/truncate, ACK and revision gates, progress races, reconnect/unknown outcomes, import/start gates and map coordinates.');
+console.log('Indoor QML JavaScript checks passed: landing draft edits without transmission, future edits/append/truncate, ACK and revision gates, progress races, reconnect/unknown outcomes, import/start gates and map coordinates.');

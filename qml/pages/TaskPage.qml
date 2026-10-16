@@ -27,15 +27,17 @@ Item {
     property string pendingUpdateSession: ""
     property int pendingUpdateRevision: 0
     readonly property bool missionActive: groundLink.remoteAvailable && ["FLYING", "HOVERING", "LANDING"].indexOf(groundLink.mission.state) >= 0
+    readonly property bool landingLocked: groundLink.remoteAvailable && groundLink.mission.state === "LANDING"
     readonly property bool confirmedRoute: groundLink.remoteAvailable && uploadedLocalJson.length > 0 &&
         uploadedSession === groundLink.mission.map_session_id && uploadedMissionId === groundLink.mission.mission_id &&
         uploadedMissionRevision === groundLink.mission.revision
     readonly property bool dynamicEditable: confirmedRoute && reviewedSession === groundLink.mission.map_session_id &&
         ["FLYING", "HOVERING"].indexOf(groundLink.mission.state) >= 0
-    readonly property bool localEditable: !groundLink.busy && (!missionActive || dynamicEditable)
-    readonly property bool localReplaceable: !groundLink.busy && !missionActive
-    readonly property int lockedPrefixCount: missionActive ? Math.min(groundLink.mission.total,
-        groundLink.mission.state === "LANDING" ? groundLink.mission.total : groundLink.mission.completed + 1) : 0
+    // LANDING locks remote commands, but edits here only change the local draft.
+    readonly property bool localEditable: !groundLink.busy && (!missionActive || landingLocked || dynamicEditable)
+    readonly property bool localReplaceable: !groundLink.busy && (!missionActive || landingLocked)
+    readonly property int lockedPrefixCount: missionActive && !landingLocked ? Math.min(groundLink.mission.total,
+        groundLink.mission.completed + 1) : 0
     readonly property bool routeMatches: confirmedRoute && uploadedLocalJson === localJson()
     readonly property bool canUpdateLocal: indoorMode && !groundLink.busy && dynamicEditable &&
         firstLocalChange() >= lockedPrefixCount
@@ -104,6 +106,7 @@ Item {
     }
     function localDraftStatus() {
         if (!groundLink.remoteAvailable) return "等待机载连接；本地编辑尚未发送"
+        if (landingLocked) return "降落锁定：可删除、清空或编辑本地航线；重新启动机载任务后再上传"
         if (pendingUpdateRequest.length) return "更新已发送，等待机载确认；当前路段继续执行"
         if (missionActive && !confirmedRoute) return "仅查看机载进度；本地航线版本尚未确认，不能更新"
         var first = firstLocalChange()
@@ -112,8 +115,11 @@ Item {
         if (missionActive) return first >= 0 ? "后续航点已修改，点击更新后续航点后生效" : "已完成及当前执行点锁定，可编辑或追加后续航点"
         return routeMatches ? "当前航线已获机载确认" : "本地草稿；上传并获得机载确认后生效"
     }
+    function storeLocalRoute(json) {
+        localStore.setValue("routeJson", json); localStore.sync()
+    }
     function saveLocal() {
-        localStore.setValue("routeJson", localJson()); localStore.sync()
+        storeLocalRoute(localJson())
         actionMessage("局部航线已保存；定位重启后需重新核对坐标")
     }
     function importLocal(text) {
@@ -138,7 +144,7 @@ Item {
         } catch (error) { actionMessage("局部航线导入失败：" + error.message) }
     }
     function uploadLocal() {
-        if (!localReplaceable || !groundLink.remoteAvailable || reviewedSession !== groundLink.mission.map_session_id) {
+        if (!localReplaceable || missionActive || !groundLink.remoteAvailable || reviewedSession !== groundLink.mission.map_session_id) {
             actionMessage("请连接机载任务网关，核对本次定位会话的原点和方向，再勾选确认")
             return
         }
@@ -161,6 +167,7 @@ Item {
         groundLink.startUploadedMission(groundLink.mission.mission_id, groundLink.mission.revision, reviewedSession)
     }
     function localPointState(index) {
+        if (landingLocked) return "本地草稿"
         if (!confirmedRoute) return "本地编辑"
         var draft = JSON.parse(localJson()), previous = JSON.parse(uploadedLocalJson)
         if (JSON.stringify(draft[index]) !== JSON.stringify(previous[index])) return index < lockedPrefixCount ? "草稿冲突" : "待更新"
@@ -185,6 +192,7 @@ Item {
             if (accepted && groundLink.remoteAvailable && pendingUploadSession === groundLink.mission.map_session_id && groundLink.mission.revision === 1) {
                 uploadedLocalJson = pendingUploadJson; uploadedMissionId = groundLink.mission.mission_id
                 uploadedMissionRevision = groundLink.mission.revision; uploadedSession = pendingUploadSession
+                storeLocalRoute(pendingUploadJson)
             } else clearConfirmedRoute()
             pendingUploadRequest = ""
         }
@@ -193,6 +201,7 @@ Item {
                     pendingUpdateMissionId === groundLink.mission.mission_id && pendingUpdateRevision === groundLink.mission.revision) {
                 uploadedLocalJson = pendingUpdateJson; uploadedMissionId = pendingUpdateMissionId
                 uploadedMissionRevision = pendingUpdateRevision; uploadedSession = pendingUpdateSession
+                storeLocalRoute(pendingUpdateJson)
             }
             pendingUpdateRequest = ""
             handleMissionChanged()
@@ -589,8 +598,8 @@ Item {
                         GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "导入航线"; enabled: !page.indoorMode || page.localReplaceable; onClicked: { routeInput.text = page.indoorMode ? page.localJson() : page.savedRouteJson() || page.routeJson(); routeDialog.open() } }
                         GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "保存航线"; onClicked: page.indoorMode ? page.saveLocal() : page.saveRoute() }
                         GButton { objectName: "localRouteSendButton"; visible: page.contentTab === 0; width: page.missionActive ? 112 : 92; height: 34
-                            text: page.missionActive ? "更新后续航点" : "上传航线"
-                            enabled: page.missionActive ? page.canUpdateLocal : page.indoorMode && page.localReplaceable && groundLink.remoteAvailable
+                            text: page.landingLocked ? "降落锁定" : page.missionActive ? "更新后续航点" : "上传航线"
+                            enabled: !page.landingLocked && (page.missionActive ? page.canUpdateLocal : page.indoorMode && page.localReplaceable && groundLink.remoteAvailable)
                             onClicked: page.missionActive ? page.updateLocal() : page.uploadLocal()
                         }
                     }
