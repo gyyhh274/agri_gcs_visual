@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QHostAddress>
 #include <QNetworkInterface>
+#include <QNetworkProxy>
 #include <QTcpSocket>
 #include <QTimer>
 #include <functional>
@@ -132,6 +133,22 @@ void RelayDiscovery::beginScan()
         const QStringList parts = ip.split(QLatin1Char('.'));
         if (parts.size() != 4)
             return;
+        bool ok0 = false, ok1 = false;
+        const int b0 = parts.at(0).toInt(&ok0);
+        const int b1 = parts.at(1).toInt(&ok1);
+        if (!ok0 || !ok1)
+            return;
+        // 忽略回环 (127.0.0.0/8) 与全零
+        if (b0 == 127 || b0 == 0)
+            return;
+        // 忽略链路本地地址 (169.254.0.0/16)
+        if (b0 == 169 && b1 == 254)
+            return;
+        // 忽略 Tailscale / CGNAT 点对点虚拟网段 (100.64.0.0/10)
+        // 虚拟网卡为点对点网状互联，绝非局域网广播段，不能盲扫 254 个 IP
+        if (b0 == 100 && (b1 >= 64 && b1 <= 127))
+            return;
+
         const QString base = parts.at(0) + QLatin1Char('.') + parts.at(1)
                              + QLatin1Char('.') + parts.at(2);
         if (!bases.contains(base))
@@ -189,6 +206,7 @@ static void probeOnceImpl(const QString &host, quint16 port, int timeoutMs,
                           std::function<void(bool)> done)
 {
     auto *socket = new QTcpSocket;
+    socket->setProxy(QNetworkProxy::NoProxy);
     auto *timer = new QTimer(socket);
     timer->setSingleShot(true);
 

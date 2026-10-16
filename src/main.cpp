@@ -10,6 +10,7 @@
 #include <QQuickItemGrabResult>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QNetworkProxy>
 #include <QRegularExpression>
 #include <QTimer>
 #include <QUrl>
@@ -22,6 +23,7 @@
 #include "GimbalLink.h"
 #include "PhotoLibrary.h"
 #include "RelayDiscovery.h"
+#include "NativeVideoItem.h"
 
 namespace {
 void reportError(const QString &message)
@@ -74,7 +76,16 @@ int main(int argc, char *argv[])
         if (qstrcmp(argv[i], "--software") == 0)
             qputenv("QT_QUICK_BACKEND", "software");
     }
+#ifdef AGRI_GCS_NATIVE_GSTREAMER
+    if (qgetenv("QT_QUICK_BACKEND") != "software") {
+        QCoreApplication::setAttribute(Qt::AA_UseDesktopOpenGL);
+        QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+    }
+#endif
     QGuiApplication app(argc, argv);
+    // 地面站专用于无人机内网直连通信，禁用系统 HTTP/SOCKS 代理（例如 Clash 127.0.0.1:7897），
+    // 避免本地探测被劫持产生虚假目标，或导致图传/媒体流被代理截断。
+    QNetworkProxy::setApplicationProxy(QNetworkProxy::NoProxy);
     app.setApplicationName(QStringLiteral("无人机地面站"));
     app.setApplicationVersion(QStringLiteral("1.4.0"));
     app.setOrganizationName(QStringLiteral("Agri GCS"));
@@ -90,8 +101,9 @@ int main(int argc, char *argv[])
     parser.addOption({QStringLiteral("screenshot"), QStringLiteral("Save a screenshot and exit (PNG recommended)."), QStringLiteral("path")});
     parser.addOption({QStringLiteral("screenshot-delay"), QStringLiteral("Delay before capturing the screenshot, in ms (default 1000)."), QStringLiteral("ms"), QStringLiteral("1000")});
     parser.addOption({QStringLiteral("video-diag"), QStringLiteral("Log video pipeline diagnostics every second.")});
+    parser.addOption({QStringLiteral("gimbal-diag"), QStringLiteral("Log gimbal connection diagnostics without moving the camera.")});
     parser.addOption({QStringLiteral("gimbal-test"), QStringLiteral("Run a gimbal control self test and exit.")});
-    parser.addOption({QStringLiteral("gimbal-host"), QStringLiteral("Gimbal relay host used by --gimbal-test."), QStringLiteral("host"), QStringLiteral("192.168.2.113")});
+    parser.addOption({QStringLiteral("gimbal-host"), QStringLiteral("Gimbal relay host used by --gimbal-test."), QStringLiteral("host"), QStringLiteral("192.168.2.112")});
     parser.addOption({QStringLiteral("gimbal-port"), QStringLiteral("Gimbal relay port used by --gimbal-test."), QStringLiteral("port"), QStringLiteral("37260")});
     parser.addOption({QStringLiteral("start-tab"), QStringLiteral("Task page tab to open at startup (0..3)."), QStringLiteral("index"), QStringLiteral("0")});
     parser.addOption({QStringLiteral("start-page"), QStringLiteral("Top page to open at startup: 0 task, 1 log, 2 settings."), QStringLiteral("index"), QStringLiteral("0")});
@@ -149,11 +161,22 @@ int main(int argc, char *argv[])
     QQuickStyle::setStyle(QStringLiteral("Fusion"));
 
     qmlRegisterType<AsyncTileMapItem>("Agri.Map", 1, 0, "AsyncTileMap");
+    qmlRegisterType<NativeVideoItem>("Agri.Video", 1, 0, "NativeVideoItem");
     OfflineMapSource mapSource;
     NestPosition nestPosition(&mapSource);
     AircraftProfile aircraftProfile;
     GroundLink groundLink;
     GimbalLink gimbalLink;
+    if (parser.isSet(QStringLiteral("gimbal-diag"))) {
+        QObject::connect(&gimbalLink, &GimbalLink::changed, &app,
+                         [&gimbalLink, lastStatus = QString(), lastConnected = false]() mutable {
+            if (lastStatus == gimbalLink.status() && lastConnected == gimbalLink.connected()) return;
+            lastStatus = gimbalLink.status(); lastConnected = gimbalLink.connected();
+            qInfo("[gimbal-diag] connected=%d endpoint=%s status=%s",
+                  gimbalLink.connected(), qPrintable(gimbalLink.endpoint()),
+                  qPrintable(gimbalLink.status()));
+        });
+    }
     PhotoLibrary photoLibrary;
     PhotoLibrary videoLibrary;
     videoLibrary.setMediaType(1);        // 0=照片 101SIYI_IMG / 1=录像 100SIYI_VID

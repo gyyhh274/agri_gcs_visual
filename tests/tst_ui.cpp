@@ -19,6 +19,7 @@
 #include "../src/NestPosition.h"
 #include "../src/AircraftProfile.h"
 #include "../src/GroundLink.h"
+#include "../src/NativeVideoItem.h"
 
 class UiSmoke : public QObject
 {
@@ -607,6 +608,7 @@ int main(int argc, char **argv)
     app.setApplicationName("UiSmoke");
     QQuickStyle::setStyle("Fusion");
     qmlRegisterType<AsyncTileMapItem>("Agri.Map", 1, 0, "AsyncTileMap");
+    qmlRegisterType<NativeVideoItem>("Agri.Video", 1, 0, "NativeVideoItem");
     UiSmoke test;
     return QTest::qExec(&test, argc, argv);
 }

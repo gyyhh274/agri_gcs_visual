@@ -3,10 +3,19 @@
 地面站（`agri_gcs_visual`）已接入无人机云台相机的 **RTSP 实时图传**。本文说明
 地址依据、实现结构、使用步骤与故障排查。
 
+2026-10-16 更新：机载 Wi-Fi 静态地址为 `192.168.2.112`。
+macOS 使用参考工程 `MiniGUI_A8mini` 的 `A8VideoPipeline`：
+`rtspsrc (TCP) → rtph265depay → h265parse → decodebin (vtdec_hw)
+→ videoconvert → glupload → glcolorconvert → qmlglsink`，实测输出 1920×1080。
+原生路径固定 H.265/TCP，认证通过独立属性传入，不拼进日志里的 URL。
+窗口被遮挡或最小化时暂停渲染看门狗，避免把系统暂停 GL 绘制误判为断流。
+下文 `gst-pipeline:` 与 Qt Multimedia 回退策略适用于 Linux 后端。
+本机可双击项目根目录 `Start_GCS.command` 启动；构建与依赖位置见 README。
+
 ## 0. 实测可用的部署拓扑（2026-10-07 现场验证）
 
 ```text
-A8 mini 云台相机                      Jetson 机载电脑 (ubuntu / 192.168.2.113)
+A8 mini 云台相机                      Jetson 机载电脑 (ubuntu / 192.168.2.112)
   192.168.144.25:8554/main.264   ──►  网卡 rtl8168  192.168.144.30/24
   （H.265 编码，TCP）                   │
                                         ├─ MediaMTX v1.21.1 中转服务
@@ -15,8 +24,8 @@ A8 mini 云台相机                      Jetson 机载电脑 (ubuntu / 192.168.
                                         │    路径 a8mini，常驻拉流(sourceOnDemand:false)
                                         │    只读账号 a8viewer，仅限本地网段
                                         │
-  地面站（笔记本上的虚拟机）  ◄──────────┘  经 Wi-Fi 192.168.2.113:8554
-  rtsp://192.168.2.113:8554/a8mini
+  地面站（笔记本上的虚拟机）  ◄──────────┘  经 Wi-Fi 192.168.2.112:8554
+  rtsp://192.168.2.112:8554/a8mini
   认证 a8viewer / <见 MediaMTX 配置>
 ```
 

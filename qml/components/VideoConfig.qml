@@ -23,7 +23,7 @@ Item {
     //   A8 mini(192.168.144.25:8554/main.264, H.265)
     //     → Jetson 网卡 rtl8168 (192.168.144.30)
     //     → Jetson 上的 MediaMTX 中转 (0.0.0.0:8554, 路径 a8mini, read 需认证)
-    //     → 地面站经 Wi-Fi 拉流 rtsp://192.168.2.113:8554/a8mini
+    //     → 地面站经 Wi-Fi 拉流 rtsp://192.168.2.112:8554/a8mini
     //   MediaMTX 只开 TCP，且该流实际编码是 H.265（配置里注明 "named main.264
     //   but carries H.265"）。中转**常驻拉流**（sourceOnDemand: false），
     //   相机流一直热着，地面站重启只是新客户端接入，约 1 秒即可恢复画面。
@@ -42,7 +42,7 @@ Item {
      * 换机器只改这一个地址。特殊场景（例如地面站直接接在相机网段）
      * 也可以填完整的 rtsp:// 地址，此时原样使用。
      */
-    property string host: "192.168.2.113"
+    property string host: "192.168.2.112"
     readonly property int rtspPort: 8554
     readonly property string streamPath: "a8mini"    // MediaMTX 上的路径名
     readonly property string url: host.indexOf("rtsp://") === 0
@@ -51,7 +51,7 @@ Item {
 
     readonly property string relayHost: {
         var match = /^rtsp:\/\/(?:[^@\/]*@)?([^:\/]+)/.exec(url)
-        return match ? match[1] : "192.168.2.113"
+        return match ? match[1] : "192.168.2.112"
     }
     readonly property int gimbalPort: 37260
     readonly property int photoPort: 37261

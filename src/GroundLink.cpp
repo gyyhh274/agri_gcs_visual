@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QUuid>
 #include <QtGlobal>
+#include <QNetworkProxy>
 #include <QSet>
 #include <cmath>
 
@@ -23,6 +24,7 @@ bool finiteNumber(const QJsonObject &object, const char *key, double *value)
 
 GroundLink::GroundLink(QObject *parent) : QObject(parent)
 {
+    m_socket.setProxy(QNetworkProxy::NoProxy);
     connect(&m_socket, &QTcpSocket::readyRead, this, [this]() {
         m_buffer += m_socket.readAll();
         if (m_buffer.size() > kMaxFrameBytes && !m_buffer.contains('\n')) {

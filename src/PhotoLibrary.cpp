@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
+#include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QStandardPaths>
@@ -27,6 +28,7 @@ void trace(const QString &message)
 PhotoLibrary::PhotoLibrary(QObject *parent) : QObject(parent)
 {
     m_network = new QNetworkAccessManager(this);
+    m_network->setProxy(QNetworkProxy::NoProxy);
     m_cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     if (m_cacheDir.isEmpty())
         m_cacheDir = QDir::homePath() + QStringLiteral("/.cache/agri_gcs_photo");

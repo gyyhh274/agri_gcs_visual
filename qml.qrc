@@ -10,7 +10,8 @@
     <file>qml/components/IndoorMapPanel.qml</file>
     <file>qml/components/qmldir</file>
     <file>qml/components/VideoConfig.qml</file>
-    <file>qml/components/VideoStream.qml</file>
+        <file>qml/components/VideoStream.qml</file>
+        <file>qml/components/GstVideoSurface.qml</file>
     <file>qml/components/VideoPanel.qml</file>
     <file>qml/pages/TaskPage.qml</file>
     <file>qml/pages/LogPage.qml</file>

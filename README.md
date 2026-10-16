@@ -34,13 +34,26 @@
 
 「实时视频」面板已接入云台相机的真实图传，不再是示例封面。
 
+macOS 已接入 `MiniGUI_A8mini` 的原生视频实现：H.265 经 Apple
+`vtdec_hw` 硬件解码，再由 `qmlglsink` 直接显示 GL 纹理，避免 Qt5
+AVFoundation 无法播放 RTSP 的问题。当前原生路径固定 H.265/TCP。
+构建默认复用该参考项目的 GStreamer.framework 与 Qt5 qmlgl 插件；
+移动依赖时可配置 CMake 的 `AGRI_GCS_GSTREAMER_ROOT` 和
+`AGRI_GCS_QMLGL_PLUGIN_PATH`。
+
+本机使用 `./scripts/build.sh cmake` 构建后，双击
+[`Start_GCS.command`](Start_GCS.command) 启动。机载电脑目前使用静态地址
+`192.168.2.112`；现有保存配置优先于默认值，可在连接设置中核对。
+启动脚本开启云台和视频诊断，日志位于 `${TMPDIR}/agri-gcs/ground-station.log`，
+不会输出 RTSP 认证口令。硬件视频需要 OpenGL，请使用默认渲染方式。
+
 **实测可用链路**（2026-10-07 现场验证）：
 
 ```text
 A8 mini 192.168.144.25:8554/main.264 (H.265)
    → Jetson 网卡 rtl8168 192.168.144.30
    → Jetson 上的 MediaMTX 中转 (systemd: mediamtx-a8mini) 0.0.0.0:8554/a8mini
-   → 地面站 rtsp://192.168.2.113:8554/a8mini （只读账号 a8viewer，仅 TCP）
+   → 地面站 rtsp://192.168.2.112:8554/a8mini （只读账号 a8viewer，仅 TCP）
 ```
 
 - 默认预设就是上面这条「Jetson 中转 · a8mini」；直连相机的预设只在

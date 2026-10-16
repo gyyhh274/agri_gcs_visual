@@ -1,14 +1,13 @@
 import QtQuick 2.15
 import QtMultimedia 5.15
+import Agri.Video 1.0
 import "."
 
 /* 实时视频流播放器。
  *
  * 设计要点：
- *  1. 首选自定义 GStreamer 流水线（gst-pipeline:），这样能强制 TCP、设置
- *     latency、并用 decodebin 自动识别 H.264/H.265（实机 main.264 实际是 H.265）。
- *  2. 若自定义流水线起不来（Qt 版本/后端差异），自动回退到普通 rtsp:// 地址，
- *     由 Qt 自己的 playbin 处理，保证"至少能出画面"。
+ *  1. macOS 采用原生 GStreamer + VideoToolbox + qmlglsink，直接输出 GL 纹理。
+ *  2. Linux 使用 Qt Multimedia 的 GStreamer 流水线，后端不支持时回退普通 RTSP。
  *  3. 断流/卡死/结束都会按指数退避自动重连，界面不阻塞。
  *  4. 所有启动请求都经过 600ms 合并延时：必须等窗口暴露完成，
  *     qtvideosink 才能挂到 VideoOutput 上，否则流水线会停在 Loaded 永不播放。
@@ -29,6 +28,9 @@ Item {
     property int failures: 0
     property bool pipelineMode: true      // 当前是否在用自定义流水线
     readonly property bool usingPipeline: pipelineMode
+    readonly property bool nativeMode: nativeVideo.available
+    readonly property string backendName: nativeMode ? "硬件解码 · " + (nativeVideo.decoder || "VideoToolbox") + " · TCP"
+                                                    : usingPipeline ? "GStreamer · TCP · auto H.264/H.265" : "Qt 默认管线"
     readonly property string currentUrl: VideoConfig.url
 
     property bool retryPending: false
@@ -66,6 +68,14 @@ Item {
     onPipelineModeChanged: publish()
 
     function refreshState() {
+        if (nativeMode) {
+            if (nativeSurface.status !== Loader.Ready) return
+            phase = nativeVideo.phase
+            detail = nativeVideo.detail
+            live = nativeVideo.live
+            failures = nativeVideo.failures
+            return
+        }
         if (!wantActive) {
             root.phase = "off"
             root.detail = VideoConfig.enabled ? "地址无效" : "视频流已关闭"
@@ -151,6 +161,7 @@ Item {
         loadedWatchdog.stop()
         player.stop()
         player.source = ""
+        nativeVideo.stop()
         activeRevision = ""
         refreshState()
     }
@@ -159,6 +170,17 @@ Item {
     function applySource() {
         retryPending = false
         if (!wantActive) { stopNow(); return }
+        if (nativeMode) {
+            if (nativeSurface.status !== Loader.Ready) return
+            var nativeRevision = VideoConfig.pipelineRevision + "|" + VideoConfig.userId + "|" + VideoConfig.userPw
+            if (!forceNextStart && activeRevision === nativeRevision && nativeVideo.live) return
+            forceNextStart = false
+            activeRevision = nativeRevision
+            nativeVideo.play(VideoConfig.url, VideoConfig.userId, VideoConfig.userPw,
+                             VideoConfig.latency, VideoConfig.transport)
+            refreshState()
+            return
+        }
         var next = pipelineMode ? VideoConfig.buildPipeline() : VideoConfig.plainUrl()
         /* 幂等保护：如果已经在播同一路流，直接返回，不要拆了重建。
          * 起因：页面用 Loader 切换、布局稳定过程中会重复触发 start 请求，
@@ -184,10 +206,11 @@ Item {
         loadedWatchdog.restart()
         phase = "connecting"
         detail = (pipelineMode ? "连接中（TCP/H.265 流水线）" : "连接中（Qt 默认管线）")
-        logStatus("启动 " + (pipelineMode ? "pipeline" : "plain") + " -> " + next)
+        logStatus("启动 " + (pipelineMode ? "pipeline" : "plain"))
     }
 
     function scheduleRetry() {
+        if (nativeMode || !wantActive) return
         if (retryPending) return          // 同一次故障（error + InvalidMedia）只排一次
         retryPending = true
         failures += 1
@@ -206,6 +229,7 @@ Item {
         autoPlay: false
         // 直播流不做循环，结束由我们自己重连
         onErrorChanged: {
+            if (root.nativeMode) return
             if (player.error === MediaPlayer.NoError)
                 return
             root.live = false
@@ -213,6 +237,7 @@ Item {
             root.scheduleRetry()
         }
         onStatusChanged: {
+            if (root.nativeMode) return
             root.logStatus("status=" + player.status + " playbackState=" + player.playbackState)
             if (player.status === MediaPlayer.EndOfMedia || player.status === MediaPlayer.Stalled)
                 root.scheduleRetry()
@@ -225,7 +250,7 @@ Item {
                 root.lastProgressAt = Date.now()
             }
         }
-        onPlaybackStateChanged: root.refreshState()
+        onPlaybackStateChanged: if (!root.nativeMode) root.refreshState()
     }
 
     VideoOutput {
@@ -233,6 +258,24 @@ Item {
         anchors.fill: parent
         source: player
         fillMode: VideoOutput.PreserveAspectCrop
+        visible: !root.nativeMode
+    }
+
+    NativeVideoItem {
+        id: nativeVideo
+        anchors.fill: parent
+        visible: root.nativeMode
+        onChanged: if (root.nativeMode) root.refreshState()
+    }
+
+    Loader {
+        id: nativeSurface
+        anchors.fill: parent
+        source: root.nativeMode ? "GstVideoSurface.qml" : ""
+        onLoaded: {
+            nativeVideo.attach(item)
+            if (root.wantActive) root.reconnectNow()
+        }
     }
 
     Timer {
@@ -269,7 +312,7 @@ Item {
     Timer {
         interval: 2000
         repeat: true
-        running: root.wantActive
+        running: root.wantActive && !root.nativeMode
         onTriggered: {
             if (root.phase === "live" && !root.progressing) {
                 root.logStatus("画面停止推进（假在线），强制重连")
@@ -285,19 +328,28 @@ Item {
         interval: 1000
         repeat: true
         running: root.diagnostics
-        onTriggered: console.log("[VS-diag] status=" + player.status
+        onTriggered: {
+            if (root.nativeMode) {
+                console.log("[VS-diag] native frames=" + nativeVideo.frames
+                            + " phase=" + nativeVideo.phase + " detail=" + nativeVideo.detail)
+                return
+            }
+            console.log("[VS-diag] status=" + player.status
             + " state=" + player.playbackState
             + " pos=" + Math.round(player.position)
             + " buf=" + player.bufferStatus
             + " hasVideo=" + player.hasVideo
             + " seekable=" + player.seekable
             + " live=" + root.live)
+        }
     }
 
     // 地址、传输方式、编码或缓冲变化都要重建连接
     Connections {
         target: VideoConfig
         function onPipelineRevisionChanged() { if (root.wantActive) root.requestStart() }
+        function onUserIdChanged() { if (root.wantActive) root.requestStart() }
+        function onUserPwChanged() { if (root.wantActive) root.requestStart() }
         function onReconnectRequestChanged() { VideoConfig.enabled = true; root.reconnectNow() }
     }
 

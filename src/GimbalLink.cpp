@@ -2,6 +2,7 @@
 
 #include <QDateTime>
 #include <QHostAddress>
+#include <QNetworkProxy>
 #include <QtGlobal>
 #include <algorithm>
 #include <cmath>
@@ -77,6 +78,7 @@ double clampValue(double value, double low, double high)
 
 GimbalLink::GimbalLink(QObject *parent) : QObject(parent)
 {
+    m_socket.setProxy(QNetworkProxy::NoProxy);
     connect(&m_socket, &QUdpSocket::readyRead, this, &GimbalLink::onReadyRead);
 
     m_pollTimer.setInterval(1000);
@@ -196,20 +198,27 @@ void GimbalLink::setStatus(const QString &text)
 
 void GimbalLink::connectToGimbal(const QString &host, int port)
 {
-    if (host.trimmed().isEmpty() || port <= 0 || port > 65535) {
+    const QHostAddress address(host.trimmed());
+    if (address.isNull() || address.protocol() != QAbstractSocket::IPv4Protocol || port <= 0 || port > 65535) {
         setStatus(QStringLiteral("云台地址无效"));
         return;
     }
     // 单客户端模型：同一个 socket 一直用下去，不重连、不变更源端口
     if (!m_bound) {
-        m_socket.bind(QHostAddress(QHostAddress::AnyIPv4), 0);
+        if (!m_socket.bind(QHostAddress(QHostAddress::AnyIPv4), 0)) {
+            setStatus(QStringLiteral("云台本地端口绑定失败：%1").arg(m_socket.errorString()));
+            return;
+        }
         m_bound = true;
     }
-    m_socket.connectToHost(QHostAddress(host), static_cast<quint16>(port));
-    // QUdpSocket::connectToHost 只设置默认目标；用 writeDatagram 发送更直观
-    m_socket.disconnectFromHost();
+    // writeDatagram 已指定目标；disconnectFromHost 会关闭刚绑定的 socket，
+    // 导致重连时源端口变化。始终保留同一个 IPv4 socket。
 
-    m_endpoint = QStringLiteral("%1:%2").arg(host).arg(port);
+    resetState();
+    m_lastReplyMs = 0;
+    while (m_socket.hasPendingDatagrams())
+        m_socket.readDatagram(nullptr, 0);
+    m_endpoint = QStringLiteral("%1:%2").arg(address.toString()).arg(port);
     m_pending.clear();
     m_pollTimer.start();
     setStatus(QStringLiteral("正在连接云台 %1").arg(m_endpoint));
@@ -220,6 +229,10 @@ void GimbalLink::connectToGimbal(const QString &host, int port)
 
 void GimbalLink::disconnectFromGimbal()
 {
+    if (rotating()) {
+        stopRotate();
+        flushRotate(); // 先把零速度发到旧目标，再停定时器和清除地址。
+    }
     m_pollTimer.stop();
     m_pending.clear();
     m_attitudeFlushTimer.stop();
@@ -230,6 +243,8 @@ void GimbalLink::disconnectFromGimbal()
     m_rotateDirty = false;
     m_rotateTimer.stop();
     resetState();
+    m_endpoint.clear();
+    m_lastReplyMs = 0;
     m_status = QStringLiteral("已断开云台链路");
     emit changed();
 }
@@ -271,22 +286,37 @@ void GimbalLink::onReadyRead()
     while (m_socket.hasPendingDatagrams()) {
         QByteArray datagram;
         datagram.resize(static_cast<int>(m_socket.pendingDatagramSize()));
-        m_socket.readDatagram(datagram.data(), datagram.size());
-
-        quint8 command = 0;
-        QByteArray payload;
-        if (!parseFrame(datagram, &command, &payload))
+        QHostAddress sender;
+        quint16 senderPort = 0;
+        m_socket.readDatagram(datagram.data(), datagram.size(), &sender, &senderPort);
+        if (!m_pollTimer.isActive() ||
+            sender != QHostAddress(m_endpoint.section(':', 0, 0)) ||
+            senderPort != m_endpoint.section(':', 1).toUShort())
             continue;
-
-        m_pending.remove(command);
-        // 记录"最后一次收到回复的时间"：链路存活只按这个判据（见 onMaintenance）
-        m_lastReplyMs = nowMs();
-        if (!m_connected) {
+        // 相机可在同一个 UDP 包内合并多条 SDK 回复（实机有 45、23 字节包）。
+        // 按帧头、长度和 CRC 逐帧解析，坏帧后继续寻找有效帧。
+        for (int offset = 0; offset + 10 <= datagram.size();) {
+            if (datagram.mid(offset, 2) != QByteArray::fromHex("5566")) {
+                ++offset;
+                continue;
+            }
+            const int length = 10 + static_cast<quint8>(datagram.at(offset + 3)) +
+                               (static_cast<quint8>(datagram.at(offset + 4)) << 8);
+            quint8 command = 0;
+            QByteArray payload;
+            if (length > datagram.size() - offset ||
+                !parseFrame(datagram.mid(offset, length), &command, &payload)) {
+                ++offset;
+                continue;
+            }
+            offset += length;
+            m_pending.remove(command);
+            m_lastReplyMs = nowMs();
             m_connected = true;
             setStatus(QStringLiteral("云台在线 %1").arg(m_endpoint));
+            decodePayload(command, payload);
+            emit changed();
         }
-        decodePayload(command, payload);
-        emit changed();
     }
 }
 

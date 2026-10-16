@@ -93,8 +93,7 @@ Rectangle {
             id: infoText
             anchors.centerIn: parent
             color: "#8fa7bb"; font.pixelSize: 11
-            text: stream.usingPipeline ? "GStreamer · TCP · auto H.264/H.265"
-                                       : "Qt 默认管线 · " + VideoConfig.url
+            text: stream.backendName
         }
     }
 

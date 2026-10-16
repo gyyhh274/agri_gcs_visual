@@ -90,16 +90,6 @@ def main():
     if r and len(r) >= 2:
         print("   原始载荷:", r.hex(" "))
 
-    print("\n=========== 6) 心跳包（SDK 文档给的标准帧）===========")
-    hb = bytes.fromhex("55660101000000000059 8B".replace(" ", ""))
-    sock.sendto(hb, CAM)
-    print("   发送:", hb.hex(" "))
-    try:
-        data, _ = sock.recvfrom(2048)
-        print("   收到:", data.hex(" "))
-    except socket.timeout:
-        print("   （心跳无响应属正常，部分固件不回）")
-
     sock.close()
     print("\n探测完成（未发送任何运动指令）")
 
