@@ -12,6 +12,10 @@ Rectangle {
 
     property var client: mappingClient
     property var starter: typeof mappingStarter !== "undefined" ? mappingStarter : null
+    property var task: typeof roundTripMission !== "undefined" ? roundTripMission : null
+    property bool taskOpen: false
+    property bool selectingTarget: false
+    property int projectionRevision: 0
     readonly property bool hasPoints: client.pointCount > 0
     property string notice: ""
     property bool initialViewFitted: false
@@ -81,6 +85,7 @@ Rectangle {
             onPressed: { panel.initialViewFitted = true; lastX = mouse.x; lastY = mouse.y }
             onPositionChanged: {
                 if (!pressed) return
+                if (panel.selectingTarget && (pressedButtons & Qt.LeftButton)) return
                 var dx = mouse.x - lastX
                 var dy = mouse.y - lastY
                 if ((pressedButtons & (Qt.RightButton | Qt.MiddleButton)) || (mouse.modifiers & Qt.ShiftModifier))
@@ -92,9 +97,52 @@ Rectangle {
             }
             onWheel: { panel.initialViewFitted = true; cloud.zoom(wheel.angleDelta.y / 120) }
             onDoubleClicked: cloud.fitMap()
+            onClicked: {
+                if (panel.selectingTarget && mouse.button === Qt.LeftButton && panel.task) {
+                    var point = cloud.worldAt(mouse.x, mouse.y, panel.task.height)
+                    if (point.valid) panel.task.setTarget(point.x, point.y)
+                    panel.selectingTarget = false
+                }
+            }
         }
     }
 
+    Connections { target: cloud; function onChanged() { panel.projectionRevision++; routeOverlay.requestPaint() } }
+    Connections { target: panel.task; function onChanged() { routeOverlay.requestPaint() } }
+    Canvas {
+        id: routeOverlay
+        anchors.fill: cloud; z: 2
+        visible: panel.task !== null && panel.task.homeValid
+        onPaint: {
+            var ctx = getContext("2d"); ctx.clearRect(0,0,width,height)
+            if (!panel.task || !panel.task.homeValid || !panel.task.hasTarget) return
+            var a = cloud.projectPoint(panel.task.home.x,panel.task.home.y,panel.task.home.z)
+            var b = cloud.projectPoint(panel.task.target.x,panel.task.target.y,panel.task.target.z)
+            ctx.strokeStyle = "#e6bd65"; ctx.lineWidth = 2; ctx.setLineDash([7,5])
+            ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke()
+        }
+    }
+    Item {
+        anchors.fill: cloud; z: 3; clip: true
+        Repeater {
+            model: panel.task ? panel.task.markers : []
+            delegate: Rectangle {
+                property point screen: { var revision = panel.projectionRevision; return cloud.projectPoint(modelData.x,modelData.y,modelData.z) }
+                x: screen.x-8; y: screen.y-8; width: 16; height: 16; radius: 8
+                color: index === 0 ? "#40d5aa" : "#f0c96f"; border.color: "white"
+                Text { x: 20; y: -2; text: modelData.label; color: parent.color; font.bold: true; font.pixelSize: 14; style: Text.Outline; styleColor: "#071522" }
+            }
+        }
+    }
+    Loader {
+        id: taskDock
+        z: 5; anchors.right: parent.right; anchors.rightMargin: 12; anchors.top: tools.bottom; anchors.topMargin: 12
+        width: 292; height: Math.max(140,Math.min(610, panel.height-tools.height-footer.height-24))
+        active: panel.task !== null && panel.taskOpen
+        sourceComponent: Component {
+            IndoorMissionPanel { mission: panel.task; onSelectTarget: { cloud.topDown = true; cloud.follow = false; panel.selectingTarget = true; panel.report("请在俯视图点击目标位置") } }
+        }
+    }
     Rectangle {
         id: tools
         width: parent.width
@@ -159,6 +207,7 @@ Rectangle {
             anchors.right: parent.right; anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
+            GButton { width: 78; height: 30; pixelSize: 12; text: "往返任务"; visible: panel.task !== null; checked: panel.taskOpen; onClicked: { panel.taskOpen = !panel.taskOpen; if (!panel.taskOpen) panel.selectingTarget = false } }
             GButton { objectName: "mappingStartButton"; width: 78; height: 30; pixelSize: 12; text: panel.starter && panel.starter.busy ? "启动中…" : "启动建图"; visible: panel.starter !== null; enabled: panel.starter && !panel.starter.busy && !panel.client.demo; onClicked: panel.starter.start() }
         Rectangle {
             width: 84; height: 30; radius: 4

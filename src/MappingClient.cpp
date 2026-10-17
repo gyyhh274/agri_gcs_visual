@@ -167,6 +167,7 @@ void MappingClient::connectSocket() {
     m_socket.connectToHost(m_host, quint16(m_port));
 }
 void MappingClient::resetData() {
+    m_poseStamp = 0;
     m_points.clear(); m_voxels.clear(); m_trajectory.clear();
     m_nextEviction = 0;
     m_poseFresh = false; m_stale = true;
@@ -310,6 +311,7 @@ bool MappingClient::handleFrame(const QJsonObject &header, const QByteArray &pay
         if (m_paused) return true;
         m_position = QVector3D(float(p.at(0).toDouble()), float(p.at(1).toDouble()), float(p.at(2).toDouble()));
         m_orientation = orientation.normalized();
+        m_poseStamp = header.value("stamp").toDouble();
         m_lastPoseMs = m_clock.elapsed();
         m_poseFresh = true;
         if (m_trajectory.isEmpty() || (m_trajectory.last() - m_position).lengthSquared() >= 0.01f) {

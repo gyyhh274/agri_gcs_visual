@@ -1,0 +1,13 @@
+[Unit]
+Description=Agri GCS mission gateway SSH tunnel
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u %h/.local/lib/agri-gcs/mapping_tunnel.py --task-only --port 8765 --identity %h/.ssh/agri_task_ed25519
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

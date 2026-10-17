@@ -8,6 +8,7 @@
     <file>qml/components/Toggle.qml</file>
     <file>qml/components/MapPanel.qml</file>
     <file>qml/components/RealtimeMapPanel.qml</file>
+    <file>qml/components/IndoorMissionPanel.qml</file>
     <file>qml/components/qmldir</file>
     <file>qml/components/VideoConfig.qml</file>
     <file>qml/components/VideoStream.qml</file>

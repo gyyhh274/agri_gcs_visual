@@ -20,6 +20,7 @@ add_executable(agri_gcs_visual MACOSX_BUNDLE
     src/RelayDiscovery.cpp src/RelayDiscovery.h
     src/MappingTypes.h src/MappingClient.cpp src/MappingClient.h
     src/MappingStarter.cpp src/MappingStarter.h
+    src/RoundTripMission.cpp src/RoundTripMission.h
     src/PointCloudView.cpp src/PointCloudView.h
     src/PointCloudGpuItem.cpp src/PointCloudGpuItem.h
     qml.qrc
@@ -60,6 +61,13 @@ if(AGRI_GCS_BUILD_TESTS)
     target_include_directories(mapping_starter_test PRIVATE src)
     target_link_libraries(mapping_starter_test PRIVATE Qt5::Core Qt5::Network Qt5::Test)
     add_test(NAME mapping_starter_test COMMAND mapping_starter_test)
+    add_executable(roundtrip_test tests/tst_roundtrip.cpp src/RoundTripMission.cpp src/RoundTripMission.h
+        src/GroundLink.cpp src/GroundLink.h src/MappingClient.cpp src/MappingClient.h
+        src/PointCloudView.cpp src/PointCloudView.h src/PointCloudGpuItem.cpp src/PointCloudGpuItem.h)
+    target_include_directories(roundtrip_test PRIVATE src)
+    target_link_libraries(roundtrip_test PRIVATE Qt5::Core Qt5::Gui Qt5::Quick Qt5::Network Qt5::Concurrent Qt5::Test)
+    add_test(NAME roundtrip_test COMMAND roundtrip_test)
+    set_tests_properties(roundtrip_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
     add_executable(pointcloud_geometry_test tests/tst_pointcloud_geometry.cpp src/PointCloudGeometry.h)
     target_include_directories(pointcloud_geometry_test PRIVATE src)
     target_link_libraries(pointcloud_geometry_test PRIVATE Qt5::Core Qt5::Gui Qt5::Test)

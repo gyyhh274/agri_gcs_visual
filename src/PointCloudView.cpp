@@ -473,3 +473,24 @@ void PointCloudView::paint(QPainter* painter)
     painter->setPen(QColor(QStringLiteral("#83a6b3")));
     painter->drawText(QPointF(viewport.width() - 145, 20), QStringLiteral("%1 m / grid").arg(cache.step, 0, 'g', 3));
 }
+
+QVariantMap PointCloudView::worldAt(qreal x, qreal y, qreal z) const {
+    const auto view = state();
+    if (!view.topDown || width() < 1 || height() < 1 || !std::isfinite(x) || !std::isfinite(y)
+        || !std::isfinite(z) || x < 0 || y < 0 || x > width() || y > height()) return {{"valid", false}};
+    const Camera camera(view.target, view.distance, view.yaw, 89.5, QSizeF(width(),height()));
+    const auto ray = camera.forward + camera.right * float((x-width()/2)/camera.focal)
+        + camera.up * float((height()/2-y)/camera.focal);
+    if (std::abs(ray.z()) < 1e-6) return {{"valid", false}};
+    const double length = (z-camera.position.z())/ray.z();
+    if (!std::isfinite(length) || length <= 0) return {{"valid", false}};
+    const auto point = camera.position + ray * float(length);
+    return {{"valid", true}, {"x", point.x()}, {"y", point.y()}, {"z", z}};
+}
+QPointF PointCloudView::projectPoint(qreal x, qreal y, qreal z) const {
+    const auto view = state();
+    const Camera camera(view.target, view.distance, view.yaw, view.topDown ? 89.5 : view.pitch, QSizeF(width(),height()));
+    const QVector3D point(x,y,z);
+    if (!finite(point) || camera.depth(point) <= camera.nearPlane) return {-10000,-10000};
+    return camera.projectUnchecked(point);
+}

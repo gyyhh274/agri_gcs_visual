@@ -24,6 +24,7 @@
 #include "RelayDiscovery.h"
 #include "MappingClient.h"
 #include "MappingStarter.h"
+#include "RoundTripMission.h"
 #include "PointCloudView.h"
 
 namespace {
@@ -174,6 +175,7 @@ int main(int argc, char *argv[])
     RelayDiscovery relayDiscovery;
     MappingClient mappingClient;
     MappingStarter mappingStarter;
+    RoundTripMission roundTripMission(&groundLink, &mappingClient);
     if (parser.isSet(QStringLiteral("mapping-host")))
         mappingClient.setHost(parser.value(QStringLiteral("mapping-host")));
     if (parser.isSet(QStringLiteral("mapping-port"))) {
@@ -199,6 +201,8 @@ int main(int argc, char *argv[])
     updateMappingStartup();
     QObject::connect(&mappingClient, &MappingClient::changed, &mappingStarter, updateMappingStartup);
     QTimer::singleShot(1000, &mappingStarter, &MappingStarter::startIfEnabled);
+    if (screenshotPath.isEmpty() && !parser.isSet(QStringLiteral("mapping-demo")))
+        QTimer::singleShot(1500, &roundTripMission, &RoundTripMission::enableLocalLink);
     QSettings settings;
     QString tileDirectory = parser.isSet(QStringLiteral("tiles")) ? parser.value(QStringLiteral("tiles"))
         : qEnvironmentVariable("AGRI_GCS_TILE_DIR", settings.value("OfflineMap/directory").toString());
@@ -230,6 +234,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("relayDiscovery", &relayDiscovery);
     engine.rootContext()->setContextProperty("mappingClient", &mappingClient);
     engine.rootContext()->setContextProperty("mappingStarter", &mappingStarter);
+    engine.rootContext()->setContextProperty("roundTripMission", &roundTripMission);
     engine.rootContext()->setContextProperty("initialRealtimeMap", !parser.isSet(QStringLiteral("offline-map")));
     engine.rootContext()->setContextProperty("initialMappingCutaway", parser.isSet(QStringLiteral("mapping-cutaway")));
     engine.rootContext()->setContextProperty("initialMappingExpanded", parser.isSet(QStringLiteral("mapping-expanded")));

@@ -20,6 +20,14 @@ def configured_host(settings_path):
     return host
 
 
+def forward_arguments(port, start_port, task_only=False):
+    ports = [port] if task_only else [port, start_port]
+    result = []
+    for value in ports:
+        result += ["-L", "127.0.0.1:{0}:127.0.0.1:{0}".format(value)]
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, default=Path.home() / ".config/Agri GCS/无人机地面站.conf")
@@ -27,6 +35,7 @@ def main():
     parser.add_argument("--user", default="ly")
     parser.add_argument("--port", type=int, default=37262)
     parser.add_argument("--start-port", type=int, default=37263)
+    parser.add_argument("--task-only", action="store_true", help="Forward only --port using a separate task identity")
     args = parser.parse_args()
     if (not 1 <= args.port <= 65535 or not 1 <= args.start_port <= 65535
             or args.port == args.start_port or not re.fullmatch(r"[a-z_][a-z0-9_-]*", args.user)):
@@ -46,10 +55,9 @@ def main():
                        "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5",
                        "-o", "HostKeyAlias=agri-onboard-pointcloud",
                        "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=5",
-                       "-o", "ServerAliveCountMax=2", "-L",
-                       "127.0.0.1:{0}:127.0.0.1:{0}".format(args.port),
-                       "-L", "127.0.0.1:{0}:127.0.0.1:{0}".format(args.start_port),
-                       "{}@{}".format(args.user, host)]
+                       "-o", "ServerAliveCountMax=2"]
+            command += forward_arguments(args.port, args.start_port, args.task_only)
+            command += ["{}@{}".format(args.user, host)]
             status = "forwarding 127.0.0.1:{} through {}".format(args.port, host)
             if status != last_status:
                 print(status, flush=True)

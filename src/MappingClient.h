@@ -36,6 +36,8 @@ class MappingClient : public QObject {
     Q_PROPERTY(int port READ port WRITE setPort NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY changed)
     Q_PROPERTY(QString frameId READ frameId NOTIFY changed)
+    Q_PROPERTY(QString sessionId READ sessionId NOTIFY changed)
+    Q_PROPERTY(double poseStamp READ poseStamp NOTIFY changed)
     Q_PROPERTY(int pointCount READ pointCount NOTIFY changed)
     Q_PROPERTY(int trajectoryCount READ trajectoryCount NOTIFY changed)
     Q_PROPERTY(bool hasPose READ hasPose NOTIFY changed)
@@ -56,6 +58,8 @@ public:
     int port() const { return m_port; }
     QString status() const { return m_status; }
     QString frameId() const { return m_frameId; }
+    QString sessionId() const { return m_session; }
+    double poseStamp() const { return m_poseStamp; }
     int pointCount() const { return m_points.size(); }
     int trajectoryCount() const { return m_trajectory.size(); }
     bool hasPose() const { return m_poseFresh; }
@@ -105,6 +109,7 @@ private:
     QString m_host, m_status, m_session, m_frameId, m_lastExportPath;
     int m_port = 37262;
     int m_maxPoints = 1500000;
+    double m_poseStamp = 0;
     bool m_connected = false, m_enabled = false, m_demo = false, m_stale = true;
     bool m_paused = false, m_dirty = true, m_poseFresh = false, m_exporting = false;
     bool m_haveSequence = false;

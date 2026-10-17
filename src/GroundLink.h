@@ -3,8 +3,10 @@
 #include <QObject>
 #include <QTcpSocket>
 #include <QTimer>
+#include <QVariantMap>
+#include <QVariantList>
 
-// Read-only link to the onboard ROS gateway. No flight command is exposed here.
+// Protocol 1 read-only telemetry; protocol 2 explicit mission transactions.
 class GroundLink final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool connected READ connected NOTIFY changed)
@@ -20,8 +22,24 @@ class GroundLink final : public QObject {
     Q_PROPERTY(double worldX READ worldX NOTIFY changed)
     Q_PROPERTY(double worldY READ worldY NOTIFY changed)
     Q_PROPERTY(double worldZ READ worldZ NOTIFY changed)
+    Q_PROPERTY(int protocolVersion READ protocolVersion NOTIFY changed)
+    Q_PROPERTY(QVariantMap mission READ mission NOTIFY changed)
+    Q_PROPERTY(bool busy READ busy NOTIFY changed)
+    Q_PROPERTY(bool mapCoordinatesValid READ mapCoordinatesValid NOTIFY changed)
+    Q_PROPERTY(double mapOdomStamp READ mapOdomStamp NOTIFY changed)
+    Q_PROPERTY(QVariantList flightBounds READ flightBounds NOTIFY changed)
 public:
     explicit GroundLink(QObject *parent = nullptr);
+    ~GroundLink() override;
+    int protocolVersion() const { return m_protocol; }
+    QVariantMap mission() const { return m_mission; }
+    bool busy() const { return !m_pendingId.isEmpty(); }
+    bool mapCoordinatesValid() const { return m_mapValid; }
+    double mapOdomStamp() const { return m_mapStamp; }
+    QVariantList flightBounds() const { return m_bounds; }
+    QString sendCommand(const QString &operation, const QString &session, const QString &mission,
+                        int revision, const QVariantList &waypoints = {});
+    Q_INVOKABLE void queryMission();
     bool connected() const { return m_connected; }
     bool connecting() const { return m_connecting; }
     bool fcuConnected() const { return m_fcuConnected; }
@@ -40,11 +58,20 @@ public:
     Q_INVOKABLE void disconnectFromGateway();
 signals:
     void changed();
+    void commandFinished(const QString &requestId, bool accepted, const QString &reason, const QVariantMap &mission);
 private:
     void consumeLine(const QByteArray &line);
     void resetTelemetry();
+    void finishCommand(bool accepted, const QString &reason, const QVariantMap &mission = {});
     QTcpSocket m_socket;
     QTimer m_watchdog;
+    QTimer m_commandTimeout;
+    QString m_pendingId;
+    int m_protocol = 0;
+    QVariantMap m_mission;
+    QVariantList m_bounds;
+    bool m_mapValid = false;
+    double m_mapStamp = 0;
     QByteArray m_buffer;
     qint64 m_lastFrameMs{0};
     bool m_connected{false};

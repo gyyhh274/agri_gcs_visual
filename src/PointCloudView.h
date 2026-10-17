@@ -5,6 +5,7 @@
 #include <QPointer>
 #include <QQuickPaintedItem>
 #include <QTimer>
+#include <QVariantMap>
 #include <memory>
 
 class MappingClient;
@@ -60,6 +61,8 @@ public:
     Q_INVOKABLE void fitMap();
     Q_INVOKABLE void focusVehicle();
     Q_INVOKABLE void resetView();
+    Q_INVOKABLE QVariantMap worldAt(qreal x, qreal y, qreal z) const;
+    Q_INVOKABLE QPointF projectPoint(qreal x, qreal y, qreal z) const;
     void paint(QPainter* painter) override;
 signals:
     void changed();
