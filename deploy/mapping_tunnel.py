@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep the read-only point-cloud SSH tunnel aligned with the camera host."""
+"""Keep point-cloud and mapping-start SSH tunnels aligned with the camera host."""
 import argparse
 import configparser
 from pathlib import Path
@@ -26,8 +26,10 @@ def main():
     parser.add_argument("--identity", type=Path, default=Path.home() / ".ssh/agri_mapping_ed25519")
     parser.add_argument("--user", default="ly")
     parser.add_argument("--port", type=int, default=37262)
+    parser.add_argument("--start-port", type=int, default=37263)
     args = parser.parse_args()
-    if not 1 <= args.port <= 65535 or not re.fullmatch(r"[a-z_][a-z0-9_-]*", args.user):
+    if (not 1 <= args.port <= 65535 or not 1 <= args.start_port <= 65535
+            or args.port == args.start_port or not re.fullmatch(r"[a-z_][a-z0-9_-]*", args.user)):
         parser.error("invalid SSH user or mapping port")
     stopping = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
@@ -46,6 +48,7 @@ def main():
                        "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=5",
                        "-o", "ServerAliveCountMax=2", "-L",
                        "127.0.0.1:{0}:127.0.0.1:{0}".format(args.port),
+                       "-L", "127.0.0.1:{0}:127.0.0.1:{0}".format(args.start_port),
                        "{}@{}".format(args.user, host)]
             status = "forwarding 127.0.0.1:{} through {}".format(args.port, host)
             if status != last_status:

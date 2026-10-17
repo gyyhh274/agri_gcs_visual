@@ -9,6 +9,6 @@ fi
 install -m 644 "$SCRIPT_DIR/mapping_tunnel.py" "$HOME/.local/lib/agri-gcs/mapping_tunnel.py"
 install -m 644 "$SCRIPT_DIR/agri-mapping-tunnel.service" "$HOME/.config/systemd/user/agri-mapping-tunnel.service"
 systemctl --user daemon-reload
-echo "Authorize this dedicated public key on the Jetson with permitopen=127.0.0.1:37262 and verify its SSH host key:"
+echo 'Authorize this dedicated public key on the Jetson with permitopen="127.0.0.1:37262",permitopen="127.0.0.1:37263" and verify its SSH host key:'
 cat "$HOME/.ssh/agri_mapping_ed25519.pub"
 echo "Then run: systemctl --user enable --now agri-mapping-tunnel.service"

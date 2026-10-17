@@ -19,6 +19,7 @@ add_executable(agri_gcs_visual MACOSX_BUNDLE
     src/PhotoLibrary.cpp src/PhotoLibrary.h
     src/RelayDiscovery.cpp src/RelayDiscovery.h
     src/MappingTypes.h src/MappingClient.cpp src/MappingClient.h
+    src/MappingStarter.cpp src/MappingStarter.h
     src/PointCloudView.cpp src/PointCloudView.h
     src/PointCloudGpuItem.cpp src/PointCloudGpuItem.h
     qml.qrc
@@ -55,6 +56,10 @@ if(AGRI_GCS_BUILD_TESTS)
     target_include_directories(mapping_client_test PRIVATE src)
     target_link_libraries(mapping_client_test PRIVATE Qt5::Core Qt5::Gui Qt5::Network Qt5::Concurrent Qt5::Test)
     add_test(NAME mapping_client_test COMMAND mapping_client_test)
+    add_executable(mapping_starter_test tests/tst_mapping_starter.cpp src/MappingStarter.cpp src/MappingStarter.h)
+    target_include_directories(mapping_starter_test PRIVATE src)
+    target_link_libraries(mapping_starter_test PRIVATE Qt5::Core Qt5::Network Qt5::Test)
+    add_test(NAME mapping_starter_test COMMAND mapping_starter_test)
     add_executable(pointcloud_geometry_test tests/tst_pointcloud_geometry.cpp src/PointCloudGeometry.h)
     target_include_directories(pointcloud_geometry_test PRIVATE src)
     target_link_libraries(pointcloud_geometry_test PRIVATE Qt5::Core Qt5::Gui Qt5::Test)

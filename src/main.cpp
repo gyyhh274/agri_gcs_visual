@@ -23,6 +23,7 @@
 #include "PhotoLibrary.h"
 #include "RelayDiscovery.h"
 #include "MappingClient.h"
+#include "MappingStarter.h"
 #include "PointCloudView.h"
 
 namespace {
@@ -106,6 +107,7 @@ int main(int argc, char *argv[])
     parser.addOption({QStringLiteral("mapping-demo"), QStringLiteral("Show explicitly labeled synthetic mapping data (no aircraft connection).")});
     parser.addOption({QStringLiteral("mapping-cutaway"), QStringLiteral("Start the indoor cutaway view, hiding upper surfaces for inspection.")});
     parser.addOption({QStringLiteral("mapping-expanded"), QStringLiteral("Open the point cloud in the expanded map view.")});
+    parser.addOption({QStringLiteral("no-mapping-autostart"), QStringLiteral("Connect to point clouds without requesting sensor startup.")});
     parser.addOption({QStringLiteral("mapping-host"), QStringLiteral("Mapping bridge host or local SSH tunnel endpoint."), QStringLiteral("host")});
     parser.addOption({QStringLiteral("mapping-port"), QStringLiteral("Mapping bridge TCP port."), QStringLiteral("port")});
     parser.addOption({QStringLiteral("tiles"), QStringLiteral("Offline z/x/y tile directory (no network fallback)."), QStringLiteral("directory")});
@@ -171,6 +173,7 @@ int main(int argc, char *argv[])
     videoLibrary.setAutoDownload(false); // 录像文件大，只列列表，下载手动点
     RelayDiscovery relayDiscovery;
     MappingClient mappingClient;
+    MappingStarter mappingStarter;
     if (parser.isSet(QStringLiteral("mapping-host")))
         mappingClient.setHost(parser.value(QStringLiteral("mapping-host")));
     if (parser.isSet(QStringLiteral("mapping-port"))) {
@@ -186,6 +189,16 @@ int main(int argc, char *argv[])
         mappingClient.startDemo();
     else
         mappingClient.setEnabled(true);
+    const bool startupSuppressed = parser.isSet(QStringLiteral("no-mapping-autostart"))
+        || !screenshotPath.isEmpty();
+    const auto updateMappingStartup = [&mappingClient, &mappingStarter, startupSuppressed] {
+        const bool localMap = mappingClient.host() == "127.0.0.1" || mappingClient.host() == "localhost";
+        mappingStarter.setSuspended(startupSuppressed || mappingClient.demo() || !mappingClient.enabled()
+                                    || !localMap || mappingClient.port() != 37262);
+    };
+    updateMappingStartup();
+    QObject::connect(&mappingClient, &MappingClient::changed, &mappingStarter, updateMappingStartup);
+    QTimer::singleShot(1000, &mappingStarter, &MappingStarter::startIfEnabled);
     QSettings settings;
     QString tileDirectory = parser.isSet(QStringLiteral("tiles")) ? parser.value(QStringLiteral("tiles"))
         : qEnvironmentVariable("AGRI_GCS_TILE_DIR", settings.value("OfflineMap/directory").toString());
@@ -216,6 +229,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("videoLibrary", &videoLibrary);
     engine.rootContext()->setContextProperty("relayDiscovery", &relayDiscovery);
     engine.rootContext()->setContextProperty("mappingClient", &mappingClient);
+    engine.rootContext()->setContextProperty("mappingStarter", &mappingStarter);
     engine.rootContext()->setContextProperty("initialRealtimeMap", !parser.isSet(QStringLiteral("offline-map")));
     engine.rootContext()->setContextProperty("initialMappingCutaway", parser.isSet(QStringLiteral("mapping-cutaway")));
     engine.rootContext()->setContextProperty("initialMappingExpanded", parser.isSet(QStringLiteral("mapping-expanded")));

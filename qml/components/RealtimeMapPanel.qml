@@ -11,6 +11,7 @@ Rectangle {
     clip: true
 
     property var client: mappingClient
+    property var starter: typeof mappingStarter !== "undefined" ? mappingStarter : null
     readonly property bool hasPoints: client.pointCount > 0
     property string notice: ""
     property bool initialViewFitted: false
@@ -158,6 +159,7 @@ Rectangle {
             anchors.right: parent.right; anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
+            GButton { objectName: "mappingStartButton"; width: 78; height: 30; pixelSize: 12; text: panel.starter && panel.starter.busy ? "启动中…" : "启动建图"; visible: panel.starter !== null; enabled: panel.starter && !panel.starter.busy && !panel.client.demo; onClicked: panel.starter.start() }
         Rectangle {
             width: 84; height: 30; radius: 4
             color: panel.client.demo ? "#533e20" : panel.client.connected && !panel.client.stale ? "#0d403a" : "#243442"
@@ -291,7 +293,9 @@ Rectangle {
         }
         Text {
             anchors.left: parent.left; anchors.leftMargin: 12; anchors.right: parent.right; anchors.rightMargin: 12; y: 26
-            text: panel.notice.length ? panel.notice : panel.client.status
+            text: panel.notice.length ? panel.notice
+                : panel.starter && !panel.client.demo && panel.starter.status.length && (panel.client.stale || panel.starter.busy)
+                  ? panel.starter.status : panel.client.status
             color: panel.notice.length ? "#8ee8d4" : "#789bab"; font.pixelSize: 10; elide: Text.ElideRight
         }
     }
@@ -300,7 +304,7 @@ Rectangle {
         id: connectionDialog
         objectName: "mappingConnectionDialog"
         parent: Overlay.overlay
-        width: 440; height: 295
+        width: 440; height: 340
         x: (parent.width - width) / 2; y: (parent.height - height) / 2
         modal: true; focus: true
         background: Rectangle { color: "#0a2234"; border.color: "#235a75"; radius: 7 }
@@ -310,6 +314,14 @@ Rectangle {
             Text { width: parent.width; text: "填写地图服务地址；使用 SSH 隧道时保持 127.0.0.1。"; wrapMode: Text.WordWrap; color: "#9dbac8"; font.pixelSize: 12 }
             Row { spacing: 10; Text { width: 64; anchors.verticalCenter: parent.verticalCenter; text: "主机地址"; color: "#cfe0ef"; font.pixelSize: 13 } GField { id: endpointHost; objectName: "mappingHostInput"; width: 318; placeholder: "127.0.0.1" } }
             Row { spacing: 10; Text { width: 64; anchors.verticalCenter: parent.verticalCenter; text: "端口"; color: "#cfe0ef"; font.pixelSize: 13 } GField { id: endpointPort; objectName: "mappingPortInput"; width: 120; placeholder: "37262" } }
+            CheckBox {
+                objectName: "mappingAutoStartCheck"
+                visible: panel.starter !== null
+                text: "打开地面站时自动启动建图"
+                checked: panel.starter ? panel.starter.autoStart : false
+                onClicked: if (panel.starter) panel.starter.autoStart = checked
+                palette.windowText: "#cfe0ef"
+            }
             Text { id: endpointError; color: "#ffb391"; height: 18; font.pixelSize: 12 }
             Row {
                 spacing: 10
