@@ -267,10 +267,13 @@ QString GroundLink::updateLocalRoute(const QVariantList &suffix, int replaceFrom
 {
     const QString state = m_mission.value("state").toString();
     const int total = m_mission.value("total").toInt();
-    if (!remoteAvailable() || (state != "FLYING" && state != "HOVERING") || missionId.isEmpty()
+    const int completed = m_mission.value("completed").toInt();
+    const bool continuation = state == "COMPLETED" || (state == "READY" && completed > 0);
+    if (!remoteAvailable() || (state != "FLYING" && state != "HOVERING" && !continuation) || missionId.isEmpty()
             || missionId != m_mission.value("mission_id").toString()
             || revision <= 1 || qint64(revision) != m_mission.value("revision").toLongLong() + 1
-            || replaceFrom <= m_mission.value("completed").toInt() || replaceFrom > total
+            || (continuation ? replaceFrom < completed || replaceFrom + suffix.size() <= completed : replaceFrom <= completed)
+            || replaceFrom > total
             || replaceFrom + suffix.size() > 200) {
         emit notified(QStringLiteral("任务版本或执行进度已变化；只能更新当前执行点之后的航点，请查询机载状态"));
         return {};
@@ -306,6 +309,19 @@ bool GroundLink::validateWaypoints(const QVariantList &waypoints)
         }
     }
     return true;
+}
+
+QString GroundLink::returnToHome(const QString &missionId, int revision, const QString &session)
+{
+    const QString state = m_mission.value("state").toString();
+    if (!remoteAvailable() || !m_armed || !m_odomFresh || missionId.isEmpty()
+            || missionId != m_mission.value("mission_id").toString()
+            || revision != m_mission.value("revision").toInt()
+            || (state != "READY" && state != "FLYING" && state != "HOVERING" && state != "COMPLETED")) {
+        emit notified(QStringLiteral("返航需要有效空中任务、定位和当前任务版本"));
+        return {};
+    }
+    return sendCommand("return", session, missionId, revision);
 }
 
 QString GroundLink::startUploadedMission(const QString &missionId, int revision, const QString &session)

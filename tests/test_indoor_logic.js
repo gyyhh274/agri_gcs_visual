@@ -54,11 +54,11 @@ context.page = context;
 const task = fs.readFileSync(path.join(__dirname, '../qml/pages/TaskPage.qml'), 'utf8');
 for (const name of ['validLocal', 'localJson', 'addLocal', 'moveLocal', 'importLocal', 'uploadLocal', 'startLocal',
     'canEditLocal', 'removeLocal', 'firstLocalChange', 'discardLocalChanges', 'localDraftStatus', 'updateLocal',
-    'localPointState', 'clearConfirmedRoute', 'handleMissionChanged', 'finishLocalCommand', 'storeLocalRoute'])
+    'localPointState', 'clearLocalRoute', 'clearConfirmedRoute', 'handleMissionChanged', 'finishLocalCommand', 'storeLocalRoute'])
     vm.runInContext(extract(task, name), context);
 // Evaluate the actual readonly QML bindings, including dependencies on live progress.
 for (const name of ['missionActive', 'landingLocked', 'confirmedRoute', 'dynamicEditable', 'localEditable', 'localReplaceable',
-    'lockedPrefixCount', 'routeMatches', 'canUpdateLocal', 'canStartLocal']) {
+    'continuationMode', 'updateMode', 'canReturnLocal', 'lockedPrefixCount', 'routeMatches', 'canUpdateLocal', 'canStartLocal']) {
     const match = new RegExp('readonly property (?:bool|int) ' + name + ': ([\\s\\S]*?)(?=\\n    (?:readonly property|Settings))').exec(task);
     assert(match, 'Missing binding ' + name);
     Object.defineProperty(context, name, {get() { return vm.runInContext('(' + match[1] + '\n)', context); }});
@@ -164,6 +164,30 @@ ack(false, {completed: 2, current_waypoint_id: 3, state: 'FLYING'});
 assert(context.confirmedRoute); assert(!context.canUpdateLocal);
 context.discardLocalChanges();
 
+// Completed routes append without uploading a new mission or executing automatically.
+Object.assign(context.groundLink.mission, {state: 'COMPLETED', completed: 3, current_waypoint_id: 0});
+assert(context.continuationMode && context.updateMode);
+assert.equal(context.lockedPrefixCount, 3);
+const flown = context.localJson(), beforeAppend = sent.length;
+context.moveLocal(0, 99, 99); context.removeLocal(2); context.uploadLocal();
+assert.equal(context.localJson(), flown); assert.equal(sent.length, beforeAppend);
+context.addLocal(8, 8); assert(context.canUpdateLocal);
+context.updateLocal();
+assert.equal(sent[sent.length - 1].operation, 'update');
+assert.equal(sent[sent.length - 1].replaceFrom, 3);
+ack(true, {state: 'READY', total: 4, revision: 5});
+assert.equal(context.groundLink.mission.completed, 3);
+assert(context.canStartLocal && context.continuationMode);
+assert.equal(sent.length, beforeAppend + 1); // No implicit start after ACK.
+context.startLocal();
+assert.equal(sent[sent.length - 1].operation, 'start');
+ack(true, {state: 'FLYING', completed: 3, current_waypoint_id: 4});
+// Restore an active three-point baseline for reconnect/unknown-outcome checks below.
+rows.pop();
+context.uploadedLocalJson = context.localJson();
+context.uploadedMissionRevision = 4;
+Object.assign(context.groundLink.mission, {state: 'FLYING', total: 3, completed: 2, revision: 4, current_waypoint_id: 3});
+
 // Reconnecting to the same confirmed route requires a fresh coordinate review.
 context.groundLink.remoteAvailable = false; context.handleMissionChanged();
 assert.equal(context.reviewedSession, ''); assert(!context.confirmedRoute);
@@ -208,6 +232,16 @@ Object.assign(context.groundLink.mission, {state: 'FLYING', completed: 0});
 assert(!context.localEditable && !context.localReplaceable); // Coordinate review still gates live edits.
 assert.equal(context.lockedPrefixCount, 1);
 
+// Explicitly clearing a completed route begins a new local draft without sending anything.
+context.groundLink.mission.state = 'COMPLETED';
+context.groundLink.mission.completed = rows.length;
+context.reviewedSession = context.groundLink.mission.map_session_id;
+assert(context.continuationMode && context.localReplaceable);
+const beforeClear = sent.length;
+context.clearLocalRoute();
+assert.equal(rows.length, 0); assert(!context.continuationMode); assert(!context.confirmedRoute);
+assert.equal(sent.length, beforeClear);
+
 const map = fs.readFileSync(path.join(__dirname, '../qml/components/IndoorMapPanel.qml'), 'utf8');
 const root = {width: 800, height: 450, centerX: 0, centerY: 0, pixelsPerMeter: 30};
 const mapContext = vm.createContext({root, Qt: {point(x, y) { return {x, y}; }}, Math});
@@ -224,3 +258,21 @@ mapContext.zoomAt(1.3, 500, 300);
 const after = root.coordinateAt(500, 300);
 assert(Math.abs(anchor.x - after.x) < 1e-10 && Math.abs(anchor.y - after.y) < 1e-10);
 console.log('Indoor QML JavaScript checks passed: landing draft edits without transmission, future edits/append/truncate, ACK and revision gates, progress races, reconnect/unknown outcomes, import/start gates and map coordinates.');
+
+// Managed SSH forwards choose their own local port; manual connection must use that port.
+const settingsSource = fs.readFileSync(path.join(__dirname, '../qml/pages/SettingsPage.qml'), 'utf8');
+const gatewayCalls = [];
+const settingsContext = vm.createContext({values: {droneIp:'127.0.0.1', dronePort:'8765'},
+    onboardManager: {connected:true, tunnelPort:49837},
+    groundLink: {connectToGateway(host, port) { gatewayCalls.push({host,port}); }}});
+for (const name of ['managedConnection','taskGatewayHost','taskGatewayPort']) {
+    const expression = new RegExp('readonly property (?:bool|string|int) ' + name + ': ([^\\n]+)').exec(settingsSource)[1];
+    Object.defineProperty(settingsContext, name, {get() { return vm.runInContext(expression, settingsContext); }});
+}
+vm.runInContext(extract(settingsSource, 'connectTaskGateway'), settingsContext);
+settingsContext.connectTaskGateway();
+assert.deepStrictEqual(gatewayCalls[0], {host:'127.0.0.1',port:49837});
+settingsContext.onboardManager.connected = false;
+settingsContext.connectTaskGateway();
+assert.deepStrictEqual(gatewayCalls[1], {host:'127.0.0.1',port:8765});
+console.log('Managed/manual gateway endpoint checks passed.');

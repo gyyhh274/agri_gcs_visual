@@ -97,6 +97,34 @@ private slots:
         QCOMPARE(truncate.value("replace_from").toInt(), 2);
     }
 
+    void completedAppendAndReturnCommands()
+    {
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        GroundLink link; link.connectToGateway("127.0.0.1", server.serverPort());
+        QVERIFY(server.waitForNewConnection(2000)); auto *peer = server.nextPendingConnection(); QVERIFY(peer);
+        auto status = mission(); status["state"] = "COMPLETED"; status["completed"] = 1;
+        sendTelemetry(peer, status); QTRY_VERIFY(link.remoteAvailable());
+        QVariantList suffix{QVariantMap{{"id", 2}, {"x", 2.}, {"y", 0.}, {"z", 1.}, {"hover_sec", 0.}}};
+        QVERIFY(link.updateLocalRoute(suffix, 0, "mission-1", 2, "session-1").isEmpty());
+        QVERIFY(link.updateLocalRoute({}, 1, "mission-1", 2, "session-1").isEmpty());
+        const auto request = link.updateLocalRoute(suffix, 1, "mission-1", 2, "session-1");
+        QVERIFY(!request.isEmpty()); QTRY_VERIFY(peer->canReadLine());
+        auto command = QJsonDocument::fromJson(peer->readLine()).object();
+        QCOMPARE(command["operation"].toString(), QString("update")); QCOMPARE(command["replace_from"].toInt(), 1);
+        status["state"] = "READY"; status["total"] = 2; status["revision"] = 2;
+        QJsonObject ack{{"type", "ack"}, {"protocol", 2}, {"request_id", request},
+                        {"accepted", true}, {"reason", "Accepted"}, {"mission", status}};
+        peer->write(QJsonDocument(ack).toJson(QJsonDocument::Compact) + '\n'); peer->flush();
+        QTRY_VERIFY(!link.busy()); QVERIFY(!peer->canReadLine()); // ACK never sends start.
+        QVERIFY(link.returnToHome("mission-1", 1, "session-1").isEmpty());
+        QVERIFY(link.returnToHome("mission-1", 2, "old-session").isEmpty());
+        QVERIFY(!link.returnToHome("mission-1", 2, "session-1").isEmpty());
+        QTRY_VERIFY(peer->canReadLine()); command = QJsonDocument::fromJson(peer->readLine()).object();
+        QCOMPARE(command["operation"].toString(), QString("return"));
+        QCOMPARE(command["mission_id"].toString(), QString("mission-1"));
+        QCOMPARE(command["revision"].toInt(), 2);
+    }
+
     void remoteUploadRequiresAckAndSession()
     {
         QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));

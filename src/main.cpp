@@ -20,6 +20,7 @@
 #include "NestPosition.h"
 #include "AircraftProfile.h"
 #include "GroundLink.h"
+#include "OnboardManager.h"
 #include "GimbalLink.h"
 #include "PhotoLibrary.h"
 #include "RelayDiscovery.h"
@@ -96,7 +97,7 @@ int main(int argc, char *argv[])
     parser.addVersionOption();
     parser.addOption({QStringLiteral("page"), QStringLiteral("Initial page: 0 task, 1 logs, 2 settings."), QStringLiteral("index"), QStringLiteral("0")});
     parser.addOption({QStringLiteral("tab"), QStringLiteral("Initial task tab: 0..3."), QStringLiteral("index"), QStringLiteral("0")});
-    parser.addOption({QStringLiteral("section"), QStringLiteral("Initial sidebar: logs 0..5, settings 0..7."), QStringLiteral("index"), QStringLiteral("0")});
+    parser.addOption({QStringLiteral("section"), QStringLiteral("Initial sidebar: logs 0..5, settings 0..8."), QStringLiteral("index"), QStringLiteral("0")});
     parser.addOption({QStringLiteral("size"), QStringLiteral("Window size in logical pixels, e.g. 1536x1024."), QStringLiteral("widthxheight"), QStringLiteral("1536x1024")});
     parser.addOption({QStringLiteral("screenshot"), QStringLiteral("Save a screenshot and exit (PNG recommended)."), QStringLiteral("path")});
     parser.addOption({QStringLiteral("screenshot-delay"), QStringLiteral("Delay before capturing the screenshot, in ms (default 1000)."), QStringLiteral("ms"), QStringLiteral("1000")});
@@ -135,12 +136,12 @@ int main(int argc, char *argv[])
     const int screenshotDelay = parser.value(QStringLiteral("screenshot-delay")).toInt();
     if (!pageValid || previewPage < 0 || previewPage > 2
             || !tabValid || previewTab < 0 || previewTab > 3
-            || !sectionValid || previewSection < 0 || previewSection > (previewPage == 2 ? 7 : previewPage == 1 ? 5 : 0)
+            || !sectionValid || previewSection < 0 || previewSection > (previewPage == 2 ? 8 : previewPage == 1 ? 5 : 0)
             || !sizeMatch.hasMatch() || width < 320 || height < 240
             || width > 8192 || height > 8192
             || screenshotDelay < 0 || screenshotDelay > 60000
             || (parser.isSet(QStringLiteral("screenshot")) && screenshotPath.isEmpty())) {
-        reportError(QStringLiteral("Invalid options: --page=0..2, --tab=0..3, --section=logs 0..5/settings 0..7/task 0, --size=320x240..8192x8192, --screenshot-delay=0..60000; screenshot path cannot be empty."));
+        reportError(QStringLiteral("Invalid options: --page=0..2, --tab=0..3, --section=logs 0..5/settings 0..8/task 0, --size=320x240..8192x8192, --screenshot-delay=0..60000; screenshot path cannot be empty."));
         return 2;
     }
 
@@ -166,6 +167,10 @@ int main(int argc, char *argv[])
     NestPosition nestPosition(&mapSource);
     AircraftProfile aircraftProfile;
     GroundLink groundLink;
+    OnboardManager onboardManager;
+    QObject::connect(&onboardManager, &OnboardManager::gatewayAvailable, &groundLink, [&groundLink](int port) {
+        if (!groundLink.connected() && !groundLink.connecting()) groundLink.connectToGateway("127.0.0.1", port);
+    });
     GimbalLink gimbalLink;
     if (parser.isSet(QStringLiteral("gimbal-diag"))) {
         QObject::connect(&gimbalLink, &GimbalLink::changed, &app,
@@ -207,6 +212,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("nestPosition", &nestPosition);
     engine.rootContext()->setContextProperty("aircraftProfile", &aircraftProfile);
     engine.rootContext()->setContextProperty("groundLink", &groundLink);
+    engine.rootContext()->setContextProperty("onboardManager", &onboardManager);
     engine.rootContext()->setContextProperty("gimbalLink", &gimbalLink);
     engine.rootContext()->setContextProperty("photoLibrary", &photoLibrary);
     engine.rootContext()->setContextProperty("videoLibrary", &videoLibrary);

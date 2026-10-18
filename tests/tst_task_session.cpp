@@ -14,6 +14,9 @@
 #include <QPointer>
 #include <QTest>
 #include <QElapsedTimer>
+#include <QQuickItem>
+#include <QQuickItemGrabResult>
+#include <QQuickWindow>
 #include <stdexcept>
 #include "AsyncTileMapItem.h"
 #include "OfflineMapSource.h"
@@ -82,6 +85,28 @@ int main(int argc, char **argv)
         switchPage(2);
         QPointer<QObject> settingsPage = window->findChild<QObject *>("settingsPage");
         check(settingsPage, "No settings page");
+        settingsPage->setProperty("sectionIndex", 8); QCoreApplication::processEvents();
+        auto *modulePanel = settingsPage->findChild<QObject *>("onboardModulePanel");
+        check(modulePanel, "Cannot load module management panel");
+        eval(modulePanel, "choose('save_video',true)");
+        check(eval(modulePanel, "selection.yolo && !selection.flight && !selection.gimbal").toBool(), "Save-video dependency incorrectly starts flight or gimbal");
+        eval(modulePanel, "choose('yolo',false)");
+        check(!eval(modulePanel, "selection.save_video").toBool(), "Unchecking YOLO left invalid save-video selection");
+        eval(modulePanel, "choose('auto_record',true)");
+        check(eval(modulePanel, "selection.gimbal && !selection.flight").toBool(), "Recording incorrectly depends on the flight stack");
+        eval(modulePanel, "choose('gimbal',false)");
+        check(!eval(modulePanel, "selection.auto_record").toBool(), "Unchecking gimbal left auto-record selected");
+        if (qEnvironmentVariableIsSet("AGRI_GCS_MODULE_SCREENSHOT")) {
+            auto *quickWindow = qobject_cast<QQuickWindow *>(window);
+            check(quickWindow, "Missing preview window"); quickWindow->show(); QTest::qWait(200);
+            auto capture = quickWindow->contentItem()->grabToImage();
+            check(!capture.isNull(), "Cannot grab module UI");
+            bool ready = false;
+            QObject::connect(capture.data(), &QQuickItemGrabResult::ready, [&] { ready = true; });
+            until([&] { return ready; });
+            check(capture->image().save(qEnvironmentVariable("AGRI_GCS_MODULE_SCREENSHOT")), "Cannot save module screenshot");
+        }
+        settingsPage->setProperty("sectionIndex", 0); QCoreApplication::processEvents();
         check(task, "Switching pages destroyed the task and lost the edited route");
         check(!task->property("visible").toBool(), "Task page still visible behind settings");
         if (auto *stream = task->findChild<QObject *>("liveVideoStream"))
@@ -142,7 +167,30 @@ int main(int argc, char **argv)
         check(eval(task, "localJson()").toString() == draft, "Switching pages lost a new unsent draft");
         check(!task->property("routeMatches").toBool(), "Unsent draft was marked as uploaded");
         QTest::qWait(50); check(!peer->bytesAvailable(), "Page switching unexpectedly transmitted commands");
-        qInfo("Task session checks passed: unsaved coordinates, hidden upload ACK, confirmed route persistence, repeated page switching and no implicit commands.");
+        eval(task, "discardLocalChanges()");
+        mission["state"] = "COMPLETED"; mission["completed"] = 1; mission["flight_ready"] = true;
+        send({{"type", "telemetry"}, {"protocol", 2}, {"server", "agri-onboard-ros"},
+            {"fcu_connected", true}, {"armed", true}, {"mission_ready", true}, {"odom_fresh", true}, {"mode", "OFFBOARD"},
+            {"battery_percent", 67.}, {"world_x", 1.35}, {"world_y", 1.57}, {"world_z", 1.}, {"mission", mission}});
+        until([&] { return task->property("continuationMode").toBool(); });
+        eval(task, "addLocal(3.0,1.5)");
+        check(task->property("canUpdateLocal").toBool(), "Completed route cannot append");
+        auto *sendButton = task->findChild<QObject *>("localRouteSendButton");
+        check(sendButton && sendButton->property("text").toString() == QString::fromUtf8("追加后续航点"), "Append action missing");
+        eval(task, "updateLocal()"); until([&] { return peer->canReadLine(); });
+        const auto append = QJsonDocument::fromJson(peer->readLine()).object();
+        check(append["operation"] == "update" && append["replace_from"].toInt() == 1, "Completed append uploaded a new mission");
+        mission["state"] = "READY"; mission["revision"] = 2; mission["total"] = 2;
+        switchPage(2);
+        send({{"type", "ack"}, {"protocol", 2}, {"request_id", append["request_id"]},
+            {"accepted", true}, {"reason", "Accepted"}, {"mission", mission}});
+        until([&] { return !link.busy(); }); switchPage(0);
+        check(task->property("canStartLocal").toBool(), "Confirmed append cannot resume");
+        QTest::qWait(50); check(!peer->bytesAvailable(), "Append ACK implicitly started flying");
+        eval(task, "startLocal()"); until([&] { return peer->canReadLine(); });
+        const auto resume = QJsonDocument::fromJson(peer->readLine()).object();
+        check(resume["operation"] == "start" && resume["revision"].toInt() == 2, "Resume did not start confirmed revision");
+        qInfo("Task session checks passed: unsaved coordinates, hidden upload ACK, confirmed route persistence, repeated page switching, completed-route append ACK and explicit resume without implicit commands.");
         return 0;
     } catch (const std::exception &error) { qCritical("Task session check failed: %s", error.what()); return 1; }
 }

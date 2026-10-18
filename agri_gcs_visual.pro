@@ -28,3 +28,6 @@ RESOURCES += qml.qrc
 TARGET = agri_gcs_visual
 VERSION = 1.4.0
 QMAKE_TARGET_BUNDLE_PREFIX = local.agri.gcs
+
+SOURCES += src/OnboardManager.cpp
+HEADERS += src/OnboardManager.h

@@ -33,14 +33,20 @@ Item {
         uploadedMissionRevision === groundLink.mission.revision
     readonly property bool dynamicEditable: confirmedRoute && reviewedSession === groundLink.mission.map_session_id &&
         ["FLYING", "HOVERING"].indexOf(groundLink.mission.state) >= 0
+    readonly property bool continuationMode: confirmedRoute && reviewedSession === groundLink.mission.map_session_id &&
+        (groundLink.mission.state === "COMPLETED" || (groundLink.mission.state === "READY" && groundLink.mission.completed > 0))
+    readonly property bool updateMode: dynamicEditable || continuationMode
+    readonly property bool canReturnLocal: indoorMode && groundLink.remoteAvailable && !groundLink.busy && groundLink.armed &&
+        groundLink.odomFresh && ["READY", "FLYING", "HOVERING", "COMPLETED"].indexOf(groundLink.mission.state) >= 0 &&
+        groundLink.mission.mission_id.length > 0
     // LANDING locks remote commands, but edits here only change the local draft.
     readonly property bool localEditable: !groundLink.busy && (!missionActive || landingLocked || dynamicEditable)
     readonly property bool localReplaceable: !groundLink.busy && (!missionActive || landingLocked)
-    readonly property int lockedPrefixCount: missionActive && !landingLocked ? Math.min(groundLink.mission.total,
+    readonly property int lockedPrefixCount: continuationMode ? groundLink.mission.completed : missionActive && !landingLocked ? Math.min(groundLink.mission.total,
         groundLink.mission.completed + 1) : 0
     readonly property bool routeMatches: confirmedRoute && uploadedLocalJson === localJson()
-    readonly property bool canUpdateLocal: indoorMode && !groundLink.busy && dynamicEditable &&
-        firstLocalChange() >= lockedPrefixCount
+    readonly property bool canUpdateLocal: indoorMode && !groundLink.busy && updateMode &&
+        firstLocalChange() >= lockedPrefixCount && (!continuationMode || localWaypoints.count > groundLink.mission.completed)
     readonly property bool canStartLocal: indoorMode && routeMatches && groundLink.remoteAvailable && !groundLink.busy &&
         groundLink.mission.state === "READY" && groundLink.mission.flight_ready && reviewedSession === groundLink.mission.map_session_id &&
         uploadedMissionId === groundLink.mission.mission_id && uploadedMissionRevision === groundLink.mission.revision
@@ -53,6 +59,8 @@ Item {
 
     function missionLabel() {
         if (!groundLink.remoteAvailable) return "等待机载任务连接"
+        if (groundLink.mission.reason.indexOf("Returning to takeoff") === 0) return "正在返航"
+        if (groundLink.mission.reason.indexOf("Returned to takeoff") === 0) return "已返航，悬停中"
         var labels = {IDLE: "尚无机载任务", READY: "已上传，等待开始", FLYING: "前往航点", HOVERING: "到点悬停", COMPLETED: "任务完成", FAILED: "任务异常", LANDING: "降落中"}
         return labels[groundLink.mission.state] || "状态未知"
     }
@@ -106,12 +114,13 @@ Item {
     }
     function localDraftStatus() {
         if (!groundLink.remoteAvailable) return "等待机载连接；本地编辑尚未发送"
-        if (landingLocked) return "降落锁定：可删除、清空或编辑本地航线；重新启动机载任务后再上传"
-        if (pendingUpdateRequest.length) return "更新已发送，等待机载确认；当前路段继续执行"
+        if (landingLocked) return "降落锁定：可删除、清空或编辑本地航线；落地未解锁后复位机载任务，再重新核对上传"
+        if (pendingUpdateRequest.length) return "更新已发送，等待机载确认；确认后以机载状态为准"
         if (missionActive && !confirmedRoute) return "仅查看机载进度；本地航线版本尚未确认，不能更新"
         var first = firstLocalChange()
-        if (missionActive && first >= 0 && first < lockedPrefixCount)
+        if ((missionActive || continuationMode) && first >= 0 && first < lockedPrefixCount)
             return "草稿中的航点已进入执行，请先撤销草稿，再编辑后续航点"
+        if (continuationMode) return first >= 0 ? "已完成航点锁定；点击追加后续航点，确认后再开始续飞" : groundLink.mission.state === "READY" ? "追加已确认；点击开始续飞，仅执行未完成航点" : "任务已完成；可追加航点，确认后再开始续飞"
         if (missionActive) return first >= 0 ? "后续航点已修改，点击更新后续航点后生效" : "已完成及当前执行点锁定，可编辑或追加后续航点"
         return routeMatches ? "当前航线已获机载确认" : "本地草稿；上传并获得机载确认后生效"
     }
@@ -121,6 +130,11 @@ Item {
     function saveLocal() {
         storeLocalRoute(localJson())
         actionMessage("局部航线已保存；定位重启后需重新核对坐标")
+    }
+    function clearLocalRoute() {
+        if (!localReplaceable) return
+        if (continuationMode) clearConfirmedRoute()
+        localWaypoints.clear(); localSelected = -1; localRevision++
     }
     function importLocal(text) {
         if (!localReplaceable) return
@@ -135,6 +149,7 @@ Item {
                 }
                 if (!validLocal(p.x, p.y, p.z, p.hover_sec)) throw new Error("局部坐标或悬停时间无效")
             }
+            if (continuationMode) clearConfirmedRoute()
             localWaypoints.clear()
             for (i = 0; i < points.length; ++i) {
                 p = points[i]; localWaypoints.append({x: p.x, y: p.y, z: p.z, hover_sec: p.hover_sec})
@@ -144,7 +159,7 @@ Item {
         } catch (error) { actionMessage("局部航线导入失败：" + error.message) }
     }
     function uploadLocal() {
-        if (!localReplaceable || missionActive || !groundLink.remoteAvailable || reviewedSession !== groundLink.mission.map_session_id) {
+        if (!localReplaceable || missionActive || continuationMode || !groundLink.remoteAvailable || reviewedSession !== groundLink.mission.map_session_id) {
             actionMessage("请连接机载任务网关，核对本次定位会话的原点和方向，再勾选确认")
             return
         }
@@ -165,6 +180,10 @@ Item {
     function startLocal() {
         if (!canStartLocal) { actionMessage("请上传当前航线，并等待机载起飞悬停及任务就绪"); return }
         groundLink.startUploadedMission(groundLink.mission.mission_id, groundLink.mission.revision, reviewedSession)
+    }
+    function returnLocal() {
+        if (!canReturnLocal) return
+        groundLink.returnToHome(groundLink.mission.mission_id, groundLink.mission.revision, groundLink.mission.map_session_id)
     }
     function localPointState(index) {
         if (landingLocked) return "本地草稿"
@@ -513,9 +532,9 @@ Item {
                     Row { width: parent.width; Text { text: "机载版本"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: groundLink.remoteAvailable ? "v" + groundLink.mission.revision + " · 当前航点 " + (groundLink.mission.current_waypoint_id || "—") : "—"; color: "#dce9f7"; font.pixelSize: 13 } }
                     Grid {
                         width: parent.width; columns: 2; spacing: 8
-                        GButton { width: 119; height:36; text: "开始任务"; icon: "▶"; fill: "#00b968"; hoverFill: "#00d079"; enabled: page.canStartLocal; onClicked: page.startLocal() }
+                        GButton { width: 119; height:36; text: groundLink.mission.completed > 0 && groundLink.mission.state === "READY" ? "开始续飞" : "开始任务"; icon: "▶"; fill: "#00b968"; hoverFill: "#00d079"; enabled: page.canStartLocal; onClicked: page.startLocal() }
                         GButton { width: 119; height:36; text: "暂停任务"; icon: "Ⅱ"; fill: "#ff8a00"; hoverFill: "#ffa126"; enabled: false; onClicked: page.actionMessage("首版暂不支持暂停，请使用遥控器接管") }
-                        GButton { width: 119; height:36; text: "返航"; icon: "⌾"; fill: "#087dff"; hoverFill: "#1695ff"; enabled: false }
+                        GButton { width: 119; height:36; text: "返航"; icon: "⌾"; fill: "#087dff"; hoverFill: "#1695ff"; enabled: page.canReturnLocal; onClicked: page.returnLocal() }
                         GButton { width: 119; height:36; text: "紧急降落"; icon: "×"; fill: "#ff4148"; hoverFill: "#ff5c61"; enabled: false }
                     }
                 }
@@ -597,10 +616,10 @@ Item {
                         anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 8
                         GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "导入航线"; enabled: !page.indoorMode || page.localReplaceable; onClicked: { routeInput.text = page.indoorMode ? page.localJson() : page.savedRouteJson() || page.routeJson(); routeDialog.open() } }
                         GButton { visible: page.contentTab === 0; width: 92; height: 34; text: "保存航线"; onClicked: page.indoorMode ? page.saveLocal() : page.saveRoute() }
-                        GButton { objectName: "localRouteSendButton"; visible: page.contentTab === 0; width: page.missionActive ? 112 : 92; height: 34
-                            text: page.landingLocked ? "降落锁定" : page.missionActive ? "更新后续航点" : "上传航线"
-                            enabled: !page.landingLocked && (page.missionActive ? page.canUpdateLocal : page.indoorMode && page.localReplaceable && groundLink.remoteAvailable)
-                            onClicked: page.missionActive ? page.updateLocal() : page.uploadLocal()
+                        GButton { objectName: "localRouteSendButton"; visible: page.contentTab === 0; width: page.updateMode || page.missionActive ? 112 : 92; height: 34
+                            text: page.landingLocked ? "降落锁定" : page.continuationMode ? "追加后续航点" : page.missionActive ? "更新后续航点" : "上传航线"
+                            enabled: !page.landingLocked && (page.missionActive || page.updateMode ? page.canUpdateLocal : page.indoorMode && page.localReplaceable && groundLink.remoteAvailable)
+                            onClicked: page.missionActive || page.updateMode ? page.updateLocal() : page.uploadLocal()
                         }
                     }
                 }
@@ -1343,8 +1362,7 @@ Item {
         contentItem: Text { text: "将清空当前编辑航点；不会清除飞控任务。\n保存后才会覆盖已保存的本地航线。"; color: "#203040"; wrapMode: Text.WordWrap }
         onAccepted: {
             if (page.indoorMode) {
-                if (!page.localReplaceable) return
-                localWaypoints.clear(); page.localSelected = -1; page.localRevision++
+                page.clearLocalRoute()
             } else page.clearRoute()
         }
     }

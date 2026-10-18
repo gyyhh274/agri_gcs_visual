@@ -37,6 +37,7 @@ public:
     Q_INVOKABLE QString updateLocalRoute(const QVariantList &suffix, int replaceFrom, const QString &missionId,
                                         int revision, const QString &session);
     Q_INVOKABLE QString startUploadedMission(const QString &missionId, int revision, const QString &session);
+    Q_INVOKABLE QString returnToHome(const QString &missionId, int revision, const QString &session);
     Q_INVOKABLE void queryMission();
     bool connected() const { return m_connected; }
     bool connecting() const { return m_connecting; }

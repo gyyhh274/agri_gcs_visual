@@ -8,11 +8,15 @@ Item {
     property int sectionIndex: 0
     property bool overviewMode: false
     readonly property bool droneConnected: groundLink.connected && groundLink.fcuConnected
+    readonly property bool managedConnection: typeof onboardManager !== "undefined" && onboardManager.connected && onboardManager.tunnelPort > 0
+    readonly property string taskGatewayHost: managedConnection ? "127.0.0.1" : String(values.droneIp)
+    readonly property int taskGatewayPort: managedConnection ? onboardManager.tunnelPort : Number(values.dronePort)
+    function connectTaskGateway() { groundLink.connectToGateway(taskGatewayHost, taskGatewayPort) }
     property bool nestConnected: false
     property bool thermal: false
     property string rtkPassword: "12345678"
     property bool nestFieldsEdited: false
-    property var sectionNames: ["连接设置", "无人机设置", "机巢设置", "任务参数", "地图设置", "告警与安全", "存储与数据", "系统维护"]
+    property var sectionNames: ["连接设置", "无人机设置", "机巢设置", "任务参数", "地图设置", "告警与安全", "存储与数据", "系统维护", "机载程序"]
     property var values: ({
         gatewayProtocol: "ros-gateway-v1", droneIp: "127.0.0.1", dronePort: "8765", droneAuto: false,
         nestIp: "192.168.1.100", nestPort: "8080", nestAuto: true,
@@ -102,7 +106,7 @@ Item {
             Column {
                 width: parent.width
                 Repeater {
-                    model: ["⌁", "♜", "▣", "▤", "◉", "♧", "▰", "⚒"]
+                    model: ["⌁", "♜", "▣", "▤", "◉", "♧", "▰", "⚒", "▶"]
                     delegate: Rectangle {
                         width: 175; height: 58; color: page.sectionIndex === index ? "#0755c8" : "transparent"; radius: page.sectionIndex === index ? 4 : 0
                         Row {
@@ -118,7 +122,7 @@ Item {
         Item {
             id: centerColumn
             width: columns.width - (page.overviewMode ? 0 : 175) - rightColumn.width - (page.overviewMode ? 12 : 24); height: parent.height
-            Loader { anchors.fill: parent; sourceComponent: page.sectionIndex === 0 ? connectionSettings : configurationSettings }
+            Loader { anchors.fill: parent; sourceComponent: page.sectionIndex === 8 ? moduleSettings : page.sectionIndex === 0 ? connectionSettings : configurationSettings }
         }
         Item {
             id: rightColumn
@@ -140,7 +144,7 @@ Item {
                     x: 15; y: 3; width: parent.width - 30
                     Repeater {
                         model: [
-                            ["✣", "无人机连接", page.droneConnected ? "已连接" : "未连接", page.values.droneIp],
+                            ["✣", "无人机连接", page.droneConnected ? "已连接" : "未连接", page.taskGatewayHost],
                             ["▣", "机巢连接", page.nestConnected ? "已连接" : "未连接", page.values.nestIp],
                             ["▧", "图传状态", VideoConfig.runtimeLive ? "实时" : (VideoConfig.runtimePhase === "connecting" ? "连接中" : VideoConfig.runtimePhase === "retry" ? "重连中" : "未接入"), VideoConfig.runtimeUsingPipeline ? "GStreamer" : "Qt"], ["●", "定位状态", groundLink.odomFresh ? "world 有效" : "未获得", "局部坐标"],
                             ["⌖", "RTK状态", "未接入", ""], ["▰", "网络状态", groundLink.connected ? "网关已连" : "未连接", groundLink.endpoint]
@@ -163,6 +167,11 @@ Item {
     }
 
     Component {
+        id: moduleSettings
+        ModuleControlPanel { manager: typeof onboardManager !== "undefined" ? onboardManager : null }
+    }
+
+    Component {
         id: connectionSettings
         // 用 Flickable 包起来：内容超出可视高度时可以用鼠标滚轮上下滑，
         // 否则底部的行会被裁掉且无法查看（实测小窗口下会切掉 1~2 行）
@@ -177,8 +186,9 @@ Item {
             id: connContent
             width: connFlick.width
             spacing: 10
+            GButton { width: parent.width; height: 36; text: "机载程序 · 选择飞行 / 云台 / YOLO"; onClicked: page.sectionIndex = 8 }
             GCard {
-                width: parent.width; height: 438; title: page.overviewMode ? "系统设置" : "连接设置"
+                width: parent.width; height: 468; title: page.overviewMode ? "系统设置" : "连接设置"
                 Row {
                     anchors.fill: parent; anchors.margins: 6; spacing: 8
                     Repeater {
@@ -210,8 +220,10 @@ Item {
                                 Item { width: 1; height: 5 }
                                 ConnectionMode { configuration: page.values; onEdited: page.setValue(key, value); configKey: isDrone ? "droneAuto" : "nestAuto" }
                                 Row { width: parent.width; height: 31; FormLabel { width: 94; text: "连接类型" } ChoiceField { width: parent.width - 94; model: isDrone ? ["机载 ROS 网关（Wi-Fi）"] : ["局域网 (LAN)", "串口 (UART)", "UDP"] } }
-                                FieldRow { configuration: page.values; onEdited: page.setValue(key, value); label: isDrone ? "网关地址" : "IP 地址"; configKey: isDrone ? "droneIp" : "nestIp" }
-                                FieldRow { configuration: page.values; onEdited: page.setValue(key, value); label: "端口"; configKey: isDrone ? "dronePort" : "nestPort" }
+                                FieldRow { visible: !isDrone || !page.managedConnection; height: visible ? implicitHeight : 0; configuration: page.values; onEdited: page.setValue(key, value); label: isDrone ? "网关地址" : "IP 地址"; configKey: isDrone ? "droneIp" : "nestIp" }
+                                Row { visible: isDrone && page.managedConnection; height: visible ? 34 : 0; width: parent.width; FormLabel { width: 94; text: "任务隧道" } Text { text: page.taskGatewayHost + ":" + page.taskGatewayPort; color: "#dce8f4"; anchors.verticalCenter: parent.verticalCenter } }
+                                FieldRow { visible: !isDrone || !page.managedConnection; height: visible ? implicitHeight : 0; configuration: page.values; onEdited: page.setValue(key, value); label: "端口"; configKey: isDrone ? "dronePort" : "nestPort" }
+                                Text { visible: isDrone; width: parent.width; height: visible ? 30 : 0; wrapMode: Text.WordWrap; color: "#8faec5"; font.pixelSize: 11; text: page.managedConnection ? "管理已连接；飞行栈的任务网关运行后才能连接遥测。" : "这是任务遥测连接；机载管理请进入「机载程序」。" }
                                 Row {
                                     width: parent.width; height: 42
                                     FormLabel { width: 94; height: 42; text: "连接状态" }
@@ -221,7 +233,7 @@ Item {
                                         onClicked: {
                                             if (isDrone) {
                                                 if (linkActive) groundLink.disconnectFromGateway()
-                                                else groundLink.connectToGateway(String(page.values.droneIp), Number(page.values.dronePort))
+                                                else page.connectTaskGateway()
                                                 page.notify(groundLink.status)
                                             } else page.notify("机巢仍为演示功能，未接入真实设备")
                                         }
@@ -358,7 +370,7 @@ Item {
                             FormLabel { width: 118; text: "ROS/TCP（只读）"; color: "#8fa6ba"; font.pixelSize: 11 }
                             ValueField { width: 92; text: page.values.dronePort; onTextEdited: page.setValue("dronePort", text) }
                             Item { width: 6; height: 1 }
-                            GButton { width: 96; height: 33; text: "测试连接"; fill: "#087dff"; onClicked: { groundLink.connectToGateway(String(page.values.droneIp), Number(page.values.dronePort)); page.notify(groundLink.status) } }
+                            GButton { width: 96; height: 33; text: "测试连接"; fill: "#087dff"; onClicked: { page.connectTaskGateway(); page.notify(groundLink.status) } }
                         }
                     }
                 }

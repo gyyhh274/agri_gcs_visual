@@ -15,6 +15,7 @@ add_executable(agri_gcs_visual MACOSX_BUNDLE
     src/NestPosition.cpp src/NestPosition.h
     src/AircraftProfile.cpp src/AircraftProfile.h
     src/GroundLink.cpp src/GroundLink.h
+    src/OnboardManager.cpp src/OnboardManager.h
     src/GimbalLink.cpp src/GimbalLink.h
     src/PhotoLibrary.cpp src/PhotoLibrary.h
     src/RelayDiscovery.cpp src/RelayDiscovery.h
@@ -80,6 +81,9 @@ if(AGRI_GCS_BUILD_TESTS)
         Qt5::Quick Qt5::QuickControls2 Qt5::Test Qt5::Positioning Qt5::Concurrent Qt5::Network)
     add_test(NAME ui_smoke COMMAND ui_smoke)
     set_tests_properties(ui_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;AGRI_GCS_TEST_TILES=${CMAKE_CURRENT_SOURCE_DIR}/maps/maxar-auckland;AGRI_GCS_TEST_SATELLITE=${CMAKE_CURRENT_SOURCE_DIR}/maps/maxar-auckland")
+    add_executable(onboard_manager_test tests/tst_onboard_manager.cpp src/OnboardManager.cpp src/OnboardManager.h)
+    target_link_libraries(onboard_manager_test PRIVATE Qt5::Core Qt5::Network Qt5::Test)
+    add_test(NAME onboard_manager_test COMMAND onboard_manager_test)
     add_executable(ground_link_test tests/tst_ground_link.cpp src/GroundLink.cpp src/GroundLink.h)
     target_link_libraries(ground_link_test PRIVATE Qt5::Core Qt5::Network Qt5::Test)
     add_test(NAME ground_link_test COMMAND ground_link_test)
