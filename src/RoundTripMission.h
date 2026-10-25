@@ -19,10 +19,12 @@ class RoundTripMission : public QObject {
     Q_PROPERTY(bool canCancel READ canCancel NOTIFY changed)
     Q_PROPERTY(double height READ height NOTIFY changed)
     Q_PROPERTY(QVector3D home READ home NOTIFY changed)
+    Q_PROPERTY(QVector3D groundOrigin READ groundOrigin NOTIFY changed)
     Q_PROPERTY(QVector3D target READ target NOTIFY changed)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY changed)
     Q_PROPERTY(QString phase READ phase NOTIFY changed)
+    Q_PROPERTY(QString readiness READ readiness NOTIFY changed)
 public:
     RoundTripMission(GroundLink *link, MappingClient *mapping, int mappingPort = 37262, QObject *parent = nullptr);
     bool contextReady() const;
@@ -36,10 +38,12 @@ public:
     bool canCancel() const;
     double height() const { return m_height; }
     QVector3D home() const { return m_home; }
+    QVector3D groundOrigin() const { return m_groundOrigin; }
     QVector3D target() const { return m_target; }
     QVariantList markers() const;
     QString status() const { return m_status; }
     QString phase() const;
+    QString readiness() const;
     void enableLocalLink();
     Q_INVOKABLE void recordHome();
     Q_INVOKABLE void setTarget(double x, double y);
@@ -52,13 +56,14 @@ signals:
 private:
     void update();
     bool inside(const QVector3D &point) const;
+    bool originReady() const;
     GroundLink *m_link;
     MappingClient *m_mapping;
     QTimer m_tick, m_reconnect;
     QList<QVector3D> m_hoverSamples;
-    QVector3D m_home, m_target;
+    QVector3D m_home, m_target, m_groundOrigin;
     QString m_mapSession, m_taskSession, m_ownedId, m_pendingId, m_pendingOperation;
-    QString m_status = QStringLiteral("请连接任务网关，等待坐标核对与场地围栏");
+    QString m_status = QStringLiteral("请连接自动任务网关，核对本次围栏、起降通道和起飞前检查");
     QVariantList m_fence;
     bool m_homeValid = false, m_hasTarget = false, m_uploaded = false;
     double m_height = 1.;

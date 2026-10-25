@@ -47,8 +47,9 @@ private slots:
         QList<QJsonObject> commands;
         QJsonObject state{{"frame_id","world"},{"map_session_id","task-session"},{"mission_id",""},
             {"revision",0},{"state","IDLE"},{"current_waypoint_id",0},{"completed",0},{"total",0},
-            {"reason",""},{"odom_fresh",true},{"flight_ready",true},{"world_x",.4},{"world_y",-.2},{"world_z",1.2},
-            {"max_abs_xy",30.},{"min_z",.3},{"max_z",2.5}};
+            {"reason",""},{"odom_fresh",true},{"flight_ready",true},{"world_x",.4},{"world_y",-.2},{"world_z",.2},
+            {"max_abs_xy",30.},{"min_z",.3},{"max_z",2.5},
+            {"automatic_supported",true},{"automatic",false},{"takeoff_ready",true},{"takeoff_height",1.}};
         QByteArray incoming;
         connect(taskPeer,&QTcpSocket::readyRead,this,[&] {
             incoming += taskPeer->readAll();
@@ -57,27 +58,31 @@ private slots:
                 commands.append(command);
                 if (command.value("operation") == "upload") {
                     state["mission_id"] = command.value("mission_id"); state["revision"] = 1;
-                    state["state"] = "READY"; state["total"] = 2; state["completed"] = 0;
-                } else if (command.value("operation") == "start") state["state"] = "FLYING";
+                    state["state"] = "READY"; state["total"] = 2; state["completed"] = 0; state["automatic"] = command.value("automatic");
+                } else if (command.value("operation") == "start") state["state"] = "TAKING_OFF";
                 else if (command.value("operation") == "cancel") state["state"] = "FAILED";
                 QJsonObject ack{{"type","ack"},{"protocol",2},{"request_id",command.value("request_id")},
                                 {"accepted",true},{"reason","accepted"},{"mission",state}};
                 taskPeer->write(QJsonDocument(ack).toJson(QJsonDocument::Compact)+'\n');
             }
         });
-        int seq = 0; QString mapSession = "map-session"; bool aligned = true;
+        int seq = 0; QString mapSession = "map-session"; bool aligned = true; bool supported = true;
         QTimer ticker;
         connect(&ticker,&QTimer::timeout,this,[&] {
             const double now = QDateTime::currentMSecsSinceEpoch()/1000.;
+            const QString stage=state.value("state").toString();
+            const bool preflight=stage=="IDLE" || stage=="READY" || stage=="COMPLETED";
+            state["takeoff_ready"]=preflight; state["automatic_supported"]=supported;
+            const double z=preflight ? .2 : 1.2;
             QJsonObject telemetry{{"type","telemetry"},{"protocol",2},{"server","agri-onboard-ros"},
-                {"fcu_connected",true},{"armed",true},{"mission_ready",true},{"odom_fresh",true},{"mode","OFFBOARD"},
-                {"battery_percent",80.},{"world_x",.4},{"world_y",-.2},{"world_z",1.2},{"mission",state},
-                {"map_coordinates_valid",aligned},{"map_odom_stamp",now},{"flight_bounds",QJsonArray{-2,-2,.3,2,2,2.5}}};
+                {"fcu_connected",true},{"armed",!preflight},{"mission_ready",!preflight},{"odom_fresh",true},{"mode",preflight ? "STABILIZED" : "OFFBOARD"},
+                {"battery_percent",80.},{"world_x",.4},{"world_y",-.2},{"world_z",z},{"mission",state},
+                {"map_coordinates_valid",aligned},{"map_odom_stamp",now},{"flight_bounds",QJsonArray{-2,-2,-.2,2,2,2.5}}};
             taskPeer->write(QJsonDocument(telemetry).toJson(QJsonDocument::Compact)+'\n');
             QJsonObject h{{"protocol",1},{"session",mapSession},{"frame","world"},{"stamp",now},{"seq",++seq},{"demo",false},
                           {"type","cloud"},{"point_count",1}};
             mapPeer->write(mapFrame(h,QByteArray(16,0)));
-            h["type"]="pose"; h["seq"]=++seq; h["position"]=QJsonArray{.4,-.2,1.2}; h["orientation"]=QJsonArray{0,0,0,1};
+            h["type"]="pose"; h["seq"]=++seq; h["position"]=QJsonArray{.4,-.2,z}; h["orientation"]=QJsonArray{0,0,0,1};
             mapPeer->write(mapFrame(h));
         });
         ticker.start(50);
@@ -88,13 +93,22 @@ private slots:
         QTRY_COMPARE(commands.size(),1);
         const auto points = commands[0].value("waypoints").toArray();
         QCOMPARE(points.size(),2); QCOMPARE(points[1].toObject().value("x").toDouble(),double(float(.4)));
-        QCOMPARE(points[1].toObject().value("z").toDouble(),double(float(1.2)));
+        QVERIFY(std::abs(points[1].toObject().value("z").toDouble()-1.2) < 1e-6);
+        QVERIFY(commands[0].value("automatic").toBool());
+        QVERIFY(std::abs(commands[0].value("ground_origin").toObject().value("z").toDouble()-.2) < 1e-6);
         QVERIFY(commands[0].value("require_map_alignment").toBool());
-        QTRY_VERIFY(mission.canStart()); mission.start();
+        QTRY_VERIFY(mission.canStart());
+        supported=false; QTRY_VERIFY(!mission.contextReady()); mission.start(); QCOMPARE(commands.size(),1);
+        supported=true; QTRY_VERIFY(mission.canStart()); mission.start();
         QTRY_COMPARE(commands.size(),2); QTRY_VERIFY(mission.active());
+        QTRY_VERIFY(mission.phase().contains(QStringLiteral("自动起飞")));
+        QVERIFY(!mission.canRecord()); mission.start(); QCOMPARE(commands.size(),2);
         state["completed"]=1; state["state"]="FLYING";
         QTRY_VERIFY(mission.phase().contains(QStringLiteral("返回")));
-        state["completed"]=2; state["state"]="COMPLETED";
+        state["completed"]=2; state["state"]="LANDING";
+        QTRY_VERIFY(mission.phase().contains(QStringLiteral("正在自动降落")));
+        QVERIFY(mission.active()); QVERIFY(!mission.canRecord());
+        state["state"]="COMPLETED";
         QTRY_VERIFY(mission.phase().contains(QStringLiteral("往返完成")));
         QVERIFY(!mission.canStart()); QCOMPARE(commands.size(),2);
         QTRY_VERIFY(mission.canRecord()); mission.recordHome(); mission.setTarget(.9,.2); mission.upload(0);

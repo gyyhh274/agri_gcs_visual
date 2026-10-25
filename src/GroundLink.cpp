@@ -24,7 +24,7 @@ bool validMission(const QJsonObject &obj) {
         const double n = v.toDouble(-1);
         return v.isDouble() && std::isfinite(n) && n >= 0 && n <= limit && std::floor(n) == n;
     };
-    const QStringList states = {"IDLE", "READY", "FLYING", "HOVERING", "COMPLETED", "FAILED", "LANDING"};
+    const QStringList states = {"IDLE", "READY", "FLYING", "HOVERING", "COMPLETED", "FAILED", "LANDING", "TAKING_OFF"};
     double value;
     if (obj.value("frame_id") != "world" || obj.value("map_session_id").toString().isEmpty()
         || obj.value("map_session_id").toString().size() > 80 || !obj.value("mission_id").isString()
@@ -35,6 +35,10 @@ bool validMission(const QJsonObject &obj) {
         || !obj.value("odom_fresh").isBool() || !obj.value("flight_ready").isBool()) return false;
     for (const char *key : {"world_x", "world_y", "world_z", "max_abs_xy", "min_z", "max_z"})
         if (!finiteNumber(obj, key, &value) || std::abs(value) > 1e6) return false;
+    if (obj.contains("automatic_supported")) {
+        if (!obj.value("automatic_supported").isBool() || !obj.value("automatic").isBool() ||
+            !obj.value("takeoff_ready").isBool() || !finiteNumber(obj,"takeoff_height",&value) || value < 0 || value > 20) return false;
+    }
     return obj.value("max_abs_xy").toDouble() > 0 && obj.value("min_z").toDouble() < obj.value("max_z").toDouble();
 }
 }
@@ -111,7 +115,7 @@ void GroundLink::finishCommand(bool accepted, const QString &reason, const QVari
     emit changed();
 }
 QString GroundLink::sendCommand(const QString &operation, const QString &session, const QString &mission,
-                               int revision, const QVariantList &waypoints) {
+                               int revision, const QVariantList &waypoints, const QVariantMap &automatic) {
     if (!m_connected || m_protocol != 2 || busy()
         || (operation != "upload" && operation != "start" && operation != "get_status" && operation != "cancel")) return {};
     QJsonObject obj{{"type", "command"}, {"protocol", 2}, {"operation", operation},
@@ -122,6 +126,10 @@ QString GroundLink::sendCommand(const QString &operation, const QString &session
     if (operation == "upload") {
         obj["frame_id"] = "world";
         obj["waypoints"] = QJsonArray::fromVariantList(waypoints);
+        if (!automatic.isEmpty()) {
+            obj["automatic"] = automatic.value("automatic").toBool();
+            obj["ground_origin"] = QJsonObject::fromVariantMap(automatic.value("ground_origin").toMap());
+        }
     }
     const QByteArray bytes = QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
     if (bytes.size() > kMaxFrameBytes || m_socket.write(bytes) != bytes.size()) {

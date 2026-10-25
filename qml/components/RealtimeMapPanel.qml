@@ -13,7 +13,7 @@ Rectangle {
     property var client: mappingClient
     property var starter: typeof mappingStarter !== "undefined" ? mappingStarter : null
     property var task: typeof roundTripMission !== "undefined" ? roundTripMission : null
-    property bool taskOpen: false
+    property bool taskOpen: true
     property bool selectingTarget: false
     property int projectionRevision: 0
     readonly property bool hasPoints: client.pointCount > 0
@@ -207,7 +207,7 @@ Rectangle {
             anchors.right: parent.right; anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
-            GButton { width: 78; height: 30; pixelSize: 12; text: "往返任务"; visible: panel.task !== null; checked: panel.taskOpen; onClicked: { panel.taskOpen = !panel.taskOpen; if (!panel.taskOpen) panel.selectingTarget = false } }
+            GButton { width: 78; height: 30; pixelSize: 12; text: "自动任务"; visible: panel.task !== null; checked: panel.taskOpen; onClicked: { panel.taskOpen = !panel.taskOpen; if (!panel.taskOpen) panel.selectingTarget = false } }
             GButton { objectName: "mappingStartButton"; width: 78; height: 30; pixelSize: 12; text: panel.starter && panel.starter.busy ? "启动中…" : "启动建图"; visible: panel.starter !== null; enabled: panel.starter && !panel.starter.busy && !panel.client.demo; onClicked: panel.starter.start() }
         Rectangle {
             width: 84; height: 30; radius: 4
