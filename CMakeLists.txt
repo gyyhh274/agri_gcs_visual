@@ -68,6 +68,13 @@ if(AGRI_GCS_BUILD_TESTS)
     target_link_libraries(roundtrip_test PRIVATE Qt5::Core Qt5::Gui Qt5::Quick Qt5::Network Qt5::Concurrent Qt5::Test)
     add_test(NAME roundtrip_test COMMAND roundtrip_test)
     set_tests_properties(roundtrip_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+    add_executable(mission_execution_test tests/tst_mission_execution.cpp
+        src/RoundTripMission.cpp src/RoundTripMission.h src/GroundLink.cpp src/GroundLink.h
+        src/MappingClient.cpp src/MappingClient.h)
+    target_include_directories(mission_execution_test PRIVATE src)
+    target_link_libraries(mission_execution_test PRIVATE Qt5::Core Qt5::Gui Qt5::Network Qt5::Concurrent Qt5::Test)
+    add_test(NAME mission_execution_test COMMAND mission_execution_test)
+    set_tests_properties(mission_execution_test PROPERTIES TIMEOUT 180)
     add_executable(pointcloud_geometry_test tests/tst_pointcloud_geometry.cpp src/PointCloudGeometry.h)
     target_include_directories(pointcloud_geometry_test PRIVATE src)
     target_link_libraries(pointcloud_geometry_test PRIVATE Qt5::Core Qt5::Gui Qt5::Test)

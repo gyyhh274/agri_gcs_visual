@@ -118,6 +118,10 @@ QString GroundLink::sendCommand(const QString &operation, const QString &session
                                int revision, const QVariantList &waypoints, const QVariantMap &automatic) {
     if (!m_connected || m_protocol != 2 || busy()
         || (operation != "upload" && operation != "start" && operation != "get_status" && operation != "cancel")) return {};
+    if (operation != "get_status" && session != m_mission.value("map_session_id").toString()) return {};
+    if ((operation == "start" || operation == "cancel")
+        && (mission.isEmpty() || mission != m_mission.value("mission_id").toString()
+            || revision <= 0 || revision != m_mission.value("revision").toInt())) return {};
     QJsonObject obj{{"type", "command"}, {"protocol", 2}, {"operation", operation},
                     {"map_session_id", session}, {"mission_id", mission}, {"revision", revision},
                     {"require_map_alignment", true}};
