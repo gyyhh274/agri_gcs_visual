@@ -60,6 +60,7 @@ public:
     Q_INVOKABLE void zoom(qreal steps);
     Q_INVOKABLE void fitMap();
     Q_INVOKABLE void focusVehicle();
+    Q_INVOKABLE bool focusFlightRegion(const QVariantList& bounds, qreal z, qreal rightInset = 0);
     Q_INVOKABLE void resetView();
     Q_INVOKABLE QVariantMap worldAt(qreal x, qreal y, qreal z) const;
     Q_INVOKABLE QPointF projectPoint(qreal x, qreal y, qreal z) const;

@@ -37,6 +37,19 @@ Rectangle {
         noticeTimer.restart()
         notified(message)
     }
+    function beginTargetSelection() {
+        if (!panel.task || !panel.task.homeValid) { panel.report("请先确认当前位置为起降点"); return }
+        panel.initialViewFitted = true
+        cloud.topDown = true
+        cloud.follow = false
+        if (panel.width < 760) panel.expanded = true
+        panel.selectingTarget = true
+        Qt.callLater(function() {
+            if (!panel.selectingTarget) return
+            cloud.focusFlightRegion(panel.task.flightBounds, panel.task.height, taskDock.active ? taskDock.width+24 : 0)
+            panel.report("选点中：请点击绿色范围内的位置；失败后可继续点击")
+        })
+    }
 
     Connections {
         target: panel.client
@@ -78,6 +91,7 @@ Rectangle {
         cutaway: typeof initialMappingCutaway !== "undefined" && initialMappingCutaway
 
         MouseArea {
+            objectName: "mappingMouseArea"
             anchors.fill: parent
             acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
             property real lastX: 0
@@ -96,12 +110,15 @@ Rectangle {
                 lastY = mouse.y
             }
             onWheel: { panel.initialViewFitted = true; cloud.zoom(wheel.angleDelta.y / 120) }
-            onDoubleClicked: cloud.fitMap()
+            onDoubleClicked: if (!panel.selectingTarget) cloud.fitMap()
             onClicked: {
                 if (panel.selectingTarget && mouse.button === Qt.LeftButton && panel.task) {
                     var point = cloud.worldAt(mouse.x, mouse.y, panel.task.height)
-                    if (point.valid) panel.task.setTarget(point.x, point.y)
-                    panel.selectingTarget = false
+                    if (!point.valid) { panel.report("无法将点击位置转换为目标坐标；请保持俯视图后重新点击"); return }
+                    if (panel.task.setTarget(point.x, point.y)) {
+                        panel.selectingTarget = false
+                        panel.report("已选择 P：" + point.x.toFixed(2) + ", " + point.y.toFixed(2) + ", Z=" + panel.task.height.toFixed(2) + " m")
+                    } else panel.report(panel.task.status)
                 }
             }
         }
@@ -115,7 +132,19 @@ Rectangle {
         visible: panel.task !== null && panel.task.homeValid
         onPaint: {
             var ctx = getContext("2d"); ctx.clearRect(0,0,width,height)
-            if (!panel.task || !panel.task.homeValid || !panel.task.hasTarget) return
+            if (!panel.task || !panel.task.homeValid) return
+            var bounds = panel.task.flightBounds
+            if (bounds.length === 6) {
+                var corners = [[bounds[0],bounds[1]], [bounds[3],bounds[1]], [bounds[3],bounds[4]], [bounds[0],bounds[4]]]
+                ctx.strokeStyle = "#40d5aa"; ctx.fillStyle = "rgba(64,213,170,0.07)"; ctx.lineWidth = 2; ctx.setLineDash([4,4])
+                ctx.beginPath()
+                for (var i=0; i<corners.length; ++i) {
+                    var p = cloud.projectPoint(corners[i][0],corners[i][1],panel.task.height)
+                    if (i === 0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y)
+                }
+                ctx.closePath(); ctx.fill(); ctx.stroke()
+            }
+            if (!panel.task.hasTarget) return
             var a = cloud.projectPoint(panel.task.home.x,panel.task.home.y,panel.task.home.z)
             var b = cloud.projectPoint(panel.task.target.x,panel.task.target.y,panel.task.target.z)
             ctx.strokeStyle = "#e6bd65"; ctx.lineWidth = 2; ctx.setLineDash([7,5])
@@ -127,6 +156,7 @@ Rectangle {
         Repeater {
             model: panel.task ? panel.task.markers : []
             delegate: Rectangle {
+                objectName: "roundTripMarker" + index
                 property point screen: { var revision = panel.projectionRevision; return cloud.projectPoint(modelData.x,modelData.y,modelData.z) }
                 x: screen.x-8; y: screen.y-8; width: 16; height: 16; radius: 8
                 color: index === 0 ? "#40d5aa" : "#f0c96f"; border.color: "white"
@@ -140,7 +170,7 @@ Rectangle {
         width: 292; height: Math.max(140,Math.min(610, panel.height-tools.height-footer.height-24))
         active: panel.task !== null && panel.taskOpen
         sourceComponent: Component {
-            IndoorMissionPanel { mission: panel.task; onSelectTarget: { cloud.topDown = true; cloud.follow = false; panel.selectingTarget = true; panel.report("请在俯视图点击目标位置") } }
+            IndoorMissionPanel { mission: panel.task; selectingTarget: panel.selectingTarget; onSelectTarget: panel.beginTargetSelection() }
         }
     }
     Rectangle {
@@ -343,6 +373,7 @@ Rectangle {
         Text {
             anchors.left: parent.left; anchors.leftMargin: 12; anchors.right: parent.right; anchors.rightMargin: 12; y: 26
             text: panel.notice.length ? panel.notice
+                : panel.selectingTarget ? "选点中：点击绿色范围内选择 P，右键平移，滚轮缩放；边框仅表示围栏，不代表无障碍。"
                 : panel.starter && !panel.client.demo && panel.starter.status.length && (panel.client.stale || panel.starter.busy)
                   ? panel.starter.status : panel.client.status
             color: panel.notice.length ? "#8ee8d4" : "#789bab"; font.pixelSize: 10; elide: Text.ElideRight

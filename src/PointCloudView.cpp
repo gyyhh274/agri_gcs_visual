@@ -307,6 +307,39 @@ void PointCloudView::focusVehicle()
       m_state.distance = std::min(m_state.distance, 12.0); }
     viewChanged();
 }
+bool PointCloudView::focusFlightRegion(const QVariantList& bounds, qreal z, qreal rightInset)
+{
+    if (bounds.size() != 6 || !std::isfinite(z) || !std::isfinite(rightInset)
+        || width() < 1 || height() < 1) return false;
+    std::array<double,6> b;
+    for (int i=0; i<6; ++i) {
+        bool ok = false; b[i] = bounds[i].toDouble(&ok);
+        if (!ok || !std::isfinite(b[i])) return false;
+    }
+    for (int i=0; i<3; ++i) if (b[i] >= b[i+3]) return false;
+    rightInset = std::clamp(rightInset, 0.0, width()*.7);
+    const qreal aspect = std::max(.1, (width()-rightInset)/height());
+    const auto view = state();
+    QVector3D center((b[0]+b[3])*.5, (b[1]+b[4])*.5, z);
+    const Camera camera(center, 1, view.yaw, 89.5, QSizeF(width(),height()));
+    qreal distance = .5;
+    for (int corner=0; corner<4; ++corner) {
+        const QVector3D delta((corner&1 ? b[3] : b[0])-center.x(),
+                              (corner&2 ? b[4] : b[1])-center.y(), 0);
+        distance = std::max(distance,
+            std::max(std::abs(QVector3D::dotProduct(delta,camera.right))/(std::tan(halfFov)*aspect),
+                     std::abs(QVector3D::dotProduct(delta,camera.up))/std::tan(halfFov))*1.25
+            - QVector3D::dotProduct(delta,camera.forward));
+    }
+    distance = std::min(distance, 20000.0);
+    // Place the region in the uncovered part of the map, left of the task dock.
+    center += camera.right * float(rightInset*.5*distance/camera.focal);
+    { QMutexLocker lock(&m_mutex);
+      m_state.target = center; m_state.distance = distance;
+      m_state.follow = false; m_state.topDown = true; }
+    viewChanged();
+    return true;
+}
 void PointCloudView::fitMap()
 {
     const auto snapshot = state().snapshot;

@@ -107,6 +107,7 @@ class MapBridge:
     def __init__(self, voxel_size=0.025, maximum_points=1500000, maximum_clients=4,
                  demo=False, clock=time.monotonic):
         self.lock = threading.RLock()
+        self.clients_lock = threading.Lock()
         self.clock = clock
         self.voxel_size = voxel_size
         self.maximum_points = maximum_points
@@ -134,7 +135,9 @@ class MapBridge:
         return encode_frame(header, payload)
 
     def _broadcast(self, packet):
-        self.clients = [peer for peer in self.clients if peer.offer(packet)]
+        # 只保护客户端列表本身；调用方可能持有也可能不持有 self.lock。
+        with self.clients_lock:
+            self.clients = [peer for peer in self.clients if peer.offer(packet)]
 
     def _reset(self, frame, reason):
         self.session = str(uuid.uuid4())
@@ -225,7 +228,7 @@ class MapBridge:
                 self._reset(frame, "source timestamp moved backwards")
             changes = OrderedDict()
             for index, point in enumerate(points):
-                if index >= 20000:
+                if index >= 6000:
                     break
                 if len(point) != 4 or not all(math.isfinite(value) for value in point):
                     continue
@@ -253,15 +256,16 @@ class MapBridge:
         norm = math.sqrt(sum(value * value for value in orientation))
         if not math.isfinite(norm) or norm < 1e-9 or any(abs(value) > 1000000 for value in position):
             return False
-        with self.lock:
-            if frame != self.frame:
-                return False
-            if self.last_stamp is not None and stamp < self.last_stamp - 3:
-                return False
-            self.pose = dict(position=list(position), orientation=[value / norm for value in orientation], stamp=stamp)
-            self.last_pose_time = self.clock()
-            self._broadcast(self._packet("pose", **self.pose))
-            return True
+        # 位姿路径刻意不拿 self.lock：点云 diff 会长时间持锁，位姿被堵住会
+        # 让地面站的"LIVE 位姿"判据超时。
+        if frame != self.frame:
+            return False
+        if self.last_stamp is not None and stamp < self.last_stamp - 3:
+            return False
+        self.pose = dict(position=list(position), orientation=[value / norm for value in orientation], stamp=stamp)
+        self.last_pose_time = self.clock()
+        self._broadcast(self._packet("pose", **self.pose))
+        return True
 
     def close(self):
         with self.lock:

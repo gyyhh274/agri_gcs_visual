@@ -63,7 +63,7 @@ if(AGRI_GCS_BUILD_TESTS)
     add_test(NAME mapping_starter_test COMMAND mapping_starter_test)
     add_executable(roundtrip_test tests/tst_roundtrip.cpp src/RoundTripMission.cpp src/RoundTripMission.h
         src/GroundLink.cpp src/GroundLink.h src/MappingClient.cpp src/MappingClient.h
-        src/PointCloudView.cpp src/PointCloudView.h src/PointCloudGpuItem.cpp src/PointCloudGpuItem.h)
+        src/PointCloudView.cpp src/PointCloudView.h src/PointCloudGpuItem.cpp src/PointCloudGpuItem.h qml.qrc)
     target_include_directories(roundtrip_test PRIVATE src)
     target_link_libraries(roundtrip_test PRIVATE Qt5::Core Qt5::Gui Qt5::Quick Qt5::Network Qt5::Concurrent Qt5::Test)
     add_test(NAME roundtrip_test COMMAND roundtrip_test)
