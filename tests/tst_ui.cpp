@@ -2,6 +2,9 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlExpression>
+#include <QQmlComponent>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QQuickStyle>
 #include <QtTest>
 #include <QTemporaryDir>
@@ -19,7 +22,35 @@
 #include "../src/NestPosition.h"
 #include "../src/AircraftProfile.h"
 #include "../src/GroundLink.h"
+#include "../src/NestPlc.h"
+#include "../src/GimbalLink.h"
+#include "../src/PhotoLibrary.h"
+#include "../src/RelayDiscovery.h"
 #include "../src/NativeVideoItem.h"
+
+// Layout-only photo source; no camera or HTTP server is needed for UI tests.
+class UiPhotoLibrary : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(QVariantList photos READ photos NOTIFY photosChanged)
+    Q_PROPERTY(int count READ count NOTIFY photosChanged)
+    Q_PROPERTY(bool busy READ busy CONSTANT)
+    Q_PROPERTY(QString status READ status CONSTANT)
+    Q_PROPERTY(QString endpoint READ endpoint CONSTANT)
+public:
+    QVariantList fixture;
+    QVariantList photos() const { return fixture; }
+    int count() const { return fixture.size(); }
+    bool busy() const { return false; }
+    QString status() const { return QStringLiteral("本机测试图片"); }
+    QString endpoint() const { return {}; }
+    Q_INVOKABLE void setEndpoint(const QString &, int) {}
+    Q_INVOKABLE void refresh() {}
+    Q_INVOKABLE void fetchNewest() {}
+    Q_INVOKABLE QString cacheDirectory() const { return {}; }
+signals:
+    void photosChanged();
+    void notified(const QString &message);
+};
 
 class UiSmoke : public QObject
 {
@@ -28,6 +59,11 @@ class UiSmoke : public QObject
     NestPosition m_nest{&m_source};
     AircraftProfile m_aircraft;
     GroundLink m_groundLink;
+    NestPlc m_plc;
+    GimbalLink m_gimbal;
+    UiPhotoLibrary m_photos;
+    PhotoLibrary m_videos;
+    RelayDiscovery m_discovery;
 
     QObject *load(QQmlApplicationEngine &engine, int page, int tab = 0, int section = 0)
     {
@@ -35,10 +71,26 @@ class UiSmoke : public QObject
         engine.rootContext()->setContextProperty("nestPosition", &m_nest);
         engine.rootContext()->setContextProperty("aircraftProfile", &m_aircraft);
         engine.rootContext()->setContextProperty("groundLink", &m_groundLink);
+        engine.rootContext()->setContextProperty("nestPlc", &m_plc);
+        engine.rootContext()->setContextProperty("gimbalLink", &m_gimbal);
+        engine.rootContext()->setContextProperty("photoLibrary", &m_photos);
+        engine.rootContext()->setContextProperty("videoLibrary", &m_videos);
+        engine.rootContext()->setContextProperty("relayDiscovery", &m_discovery);
+        engine.rootContext()->setContextProperty("initialPage", page);
+        engine.rootContext()->setContextProperty("initialTab", tab);
+        engine.rootContext()->setContextProperty("initialSection", section);
+        QQmlComponent config(&engine);
+        config.setData("import QtQuick 2.15; import \"components\"; QtObject { Component.onCompleted: { VideoConfig.host = \"127.0.0.1\"; VideoConfig.enabled = false } }", QUrl("qrc:/qml/qa-init.qml"));
+        QScopedPointer<QObject> setup(config.create());
         engine.setInitialProperties({{"pageIndex", page}, {"previewTab", tab},
                                      {"previewSection", section}, {"previewMode", true}});
         engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
-        return engine.rootObjects().isEmpty() ? nullptr : engine.rootObjects().first();
+        if (engine.rootObjects().isEmpty()) return nullptr;
+        auto *root = engine.rootObjects().first();
+        // These historical route/map tests exercise the outdoor editor. Indoor
+        // flight sessions have their own task_session_test executable.
+        if (auto *task = root->findChild<QObject *>("taskPage")) task->setProperty("indoorMode", false);
+        return root;
     }
 
     static QVariant evaluate(QObject *object, const QString &script)
@@ -53,6 +105,10 @@ class UiSmoke : public QObject
 private slots:
     void init() {
         QSettings settings;
+        m_photos.fixture.clear();
+        m_plc.disconnectPlc();
+        settings.remove("NestPlcV1");
+        m_plc.configure({{"host", "192.168.2.8"}, {"port", 502}, {"unit", 1}});
         settings.remove("MissionDemo");
         settings.remove("OfflineMap");
         settings.remove("GroundStationUi");
@@ -91,6 +147,54 @@ private slots:
         QCoreApplication::processEvents();
     }
 
+    void plcPanelUsesReadOnlyRequestsAndRealFeedback() {
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+        int reads = 0, writes = 0;
+        connect(&server, &QTcpServer::newConnection, &server, [&] {
+            auto *socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [&, socket] {
+                const QByteArray request = socket->readAll();
+                if (request.size() < 8) return;
+                const int function = quint8(request.at(7));
+                QByteArray pdu;
+                if (function == 43) pdu = QByteArray::fromHex("ab01");
+                else if (function == 3) { ++reads; pdu = QByteArray::fromHex("03021234"); }
+                else { ++writes; pdu = QByteArray::fromHex("9001"); }
+                QByteArray frame = request.left(4); frame.append(char(0)); frame.append(char(pdu.size() + 1)); frame.append(request.at(6)); frame.append(pdu);
+                socket->write(frame);
+            });
+        });
+        QQmlApplicationEngine engine;
+        auto *root = load(engine, 2, 0, 2); QVERIFY(root);
+        auto *panel = root->findChild<QObject *>("nestPlcPanel"); QVERIFY(panel);
+        evaluate(panel, QString("draft = {host:'127.0.0.1', port:%1, unit:1, statusFunction:3, statusAddress:-1, commandAddress:-1}").arg(server.serverPort()));
+        auto *connectButton = root->findChild<QObject *>("plcConnectButton"); QVERIFY(connectButton);
+        QVERIFY(QMetaObject::invokeMethod(connectButton, "clicked")); QTRY_VERIFY(m_plc.connected());
+        auto *identifyButton = root->findChild<QObject *>("plcIdentifyButton"); QVERIFY(identifyButton);
+        QVERIFY(QMetaObject::invokeMethod(identifyButton, "clicked")); QTRY_VERIFY(m_plc.protocolVerified());
+        QVERIFY(!m_plc.feedbackFresh()); QVERIFY(!m_plc.writeEnabled());
+        evaluate(panel, "readOnce()"); QCOMPARE(reads, 0); // Blank address cannot silently become address 0.
+        auto *address = root->findChild<QObject *>("plcReadAddress"); QVERIFY(address);
+        address->setProperty("text", "4294967296"); evaluate(panel, "readOnce()"); QCOMPARE(reads, 0);
+        address->setProperty("text", "7"); evaluate(panel, "readOnce()"); QTRY_COMPARE(reads, 1);
+        QTRY_VERIFY(m_plc.readResult().contains("4660"));
+        auto *statusText = root->findChild<QObject *>("plcStatusText"); QVERIFY(statusText);
+        QVERIFY(statusText->property("text").toString().contains("有效"));
+        // Navigation must preserve the TCP session, without inventing door feedback.
+        root->setProperty("pageIndex", 0); QCoreApplication::processEvents();
+        auto *open = root->findChild<QObject *>("nestOpenButton"); QVERIFY(open); QVERIFY(!open->property("enabled").toBool());
+        QVERIFY(m_plc.connected()); QCOMPARE(m_plc.doorState(), QString("未知 / 反馈未就绪")); QCOMPARE(writes, 0);
+        root->setProperty("pageIndex", 2); QCoreApplication::processEvents();
+        QVERIFY(root->findChild<QObject *>("nestPlcPanel")); QVERIFY(m_plc.protocolVerified());
+        const auto path = qEnvironmentVariable("AGRI_GCS_PLC_PREVIEW");
+        if (!path.isEmpty()) {
+            auto *window = qobject_cast<QQuickWindow *>(root); QVERIFY(window);
+            auto grab = window->contentItem()->grabToImage(); QVERIFY(grab);
+            QSignalSpy ready(grab.data(), &QQuickItemGrabResult::ready); QVERIFY(ready.wait(5000)); QVERIFY(grab->image().save(path));
+        }
+        m_plc.disconnectPlc();
+    }
+
     void routeValidation()
     {
         QQmlApplicationEngine engine;
@@ -117,6 +221,7 @@ private slots:
     void taskTabMapStable()
     {
         QFETCH(QSize, windowSize);
+        for (int i = 0; i < 36; ++i) m_photos.fixture.append(QVariantMap{{"name", QString("fixture-%1.jpg").arg(i)}, {"ready", false}, {"sizeKB", 0}, {"localPath", ""}});
         const QString tiles = qEnvironmentVariable("AGRI_GCS_TEST_TILES");
         if (tiles.isEmpty()) QSKIP("Pass AGRI_GCS_TEST_TILES for tab map stability");
         m_source.configure(tiles,false,false);
@@ -606,6 +711,9 @@ int main(int argc, char **argv)
     QGuiApplication app(argc, argv);
     app.setOrganizationName("Agri GCS UI Tests");
     app.setApplicationName("UiSmoke");
+    QTemporaryDir settingsDirectory;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
     QQuickStyle::setStyle("Fusion");
     qmlRegisterType<AsyncTileMapItem>("Agri.Map", 1, 0, "AsyncTileMap");
     qmlRegisterType<NativeVideoItem>("Agri.Video", 1, 0, "NativeVideoItem");

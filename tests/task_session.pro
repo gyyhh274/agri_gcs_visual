@@ -7,3 +7,6 @@ INCLUDEPATH += ../src
 SOURCES += tst_task_session.cpp ../src/AsyncTileMapItem.cpp ../src/OfflineMapSource.cpp ../src/NestPosition.cpp ../src/AircraftProfile.cpp ../src/GroundLink.cpp ../src/GimbalLink.cpp ../src/PhotoLibrary.cpp ../src/RelayDiscovery.cpp ../src/NativeVideoItem.cpp
 HEADERS += ../src/AsyncTileMapItem.h ../src/OfflineMapSource.h ../src/NestPosition.h ../src/AircraftProfile.h ../src/GroundLink.h ../src/GimbalLink.h ../src/PhotoLibrary.h ../src/RelayDiscovery.h ../src/NativeVideoItem.h
 RESOURCES += ../qml.qrc
+
+SOURCES += ../src/NestPlc.cpp ../src/ModbusTcpClient.cpp
+HEADERS += ../src/NestPlc.h ../src/ModbusTcpClient.h

@@ -20,6 +20,7 @@
 #include "NestPosition.h"
 #include "AircraftProfile.h"
 #include "GroundLink.h"
+#include "NestPlc.h"
 #include "OnboardManager.h"
 #include "GimbalLink.h"
 #include "PhotoLibrary.h"
@@ -167,6 +168,7 @@ int main(int argc, char *argv[])
     NestPosition nestPosition(&mapSource);
     AircraftProfile aircraftProfile;
     GroundLink groundLink;
+    NestPlc nestPlc;
     OnboardManager onboardManager;
     QObject::connect(&onboardManager, &OnboardManager::gatewayAvailable, &groundLink, [&groundLink](int port) {
         if (!groundLink.connected() && !groundLink.connecting()) groundLink.connectToGateway("127.0.0.1", port);
@@ -212,6 +214,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("nestPosition", &nestPosition);
     engine.rootContext()->setContextProperty("aircraftProfile", &aircraftProfile);
     engine.rootContext()->setContextProperty("groundLink", &groundLink);
+    engine.rootContext()->setContextProperty("nestPlc", &nestPlc);
     engine.rootContext()->setContextProperty("onboardManager", &onboardManager);
     engine.rootContext()->setContextProperty("gimbalLink", &gimbalLink);
     engine.rootContext()->setContextProperty("photoLibrary", &photoLibrary);

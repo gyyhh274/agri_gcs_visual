@@ -23,6 +23,7 @@
 #include "NestPosition.h"
 #include "AircraftProfile.h"
 #include "GroundLink.h"
+#include "NestPlc.h"
 #include "GimbalLink.h"
 #include "PhotoLibrary.h"
 #include "RelayDiscovery.h"
@@ -63,10 +64,12 @@ int main(int argc, char **argv)
         QSettings settings;
         settings.setValue("IndoorMissionV1/routeJson", oldRoute); settings.sync();
         OfflineMapSource source; NestPosition nest(&source); AircraftProfile aircraft;
+        NestPlc plc;
         GroundLink link; GimbalLink gimbal; PhotoLibrary photos, videos; RelayDiscovery discovery;
         QQmlApplicationEngine engine;
         auto *ctx = engine.rootContext();
         ctx->setContextProperty("offlineMapSource", &source); ctx->setContextProperty("nestPosition", &nest);
+        ctx->setContextProperty("nestPlc", &plc);
         ctx->setContextProperty("aircraftProfile", &aircraft); ctx->setContextProperty("groundLink", &link);
         ctx->setContextProperty("gimbalLink", &gimbal); ctx->setContextProperty("photoLibrary", &photos);
         ctx->setContextProperty("videoLibrary", &videos); ctx->setContextProperty("relayDiscovery", &discovery);
@@ -144,7 +147,7 @@ int main(int argc, char **argv)
         check(settings.value("IndoorMissionV1/routeJson").toString() == moved, "Accepted upload did not replace old saved route");
         {
             QQmlApplicationEngine restoredEngine;
-            for (const char *name : {"offlineMapSource", "nestPosition", "aircraftProfile", "groundLink", "gimbalLink",
+            for (const char *name : {"nestPlc", "offlineMapSource", "nestPosition", "aircraftProfile", "groundLink", "gimbalLink",
                                     "photoLibrary", "videoLibrary", "relayDiscovery", "initialTab", "initialPage", "initialSection"})
                 restoredEngine.rootContext()->setContextProperty(name, ctx->contextProperty(name));
             QQmlComponent restoredConfig(&restoredEngine);

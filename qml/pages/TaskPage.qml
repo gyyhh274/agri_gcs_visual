@@ -237,8 +237,14 @@ Item {
             liveLogs.insert(0, {time: Qt.formatTime(new Date(), "hh:mm:ss"), type: "任务", module: "机载", content: text})
         }
     }
-    property bool nestOpen: false
-    property bool charging: true
+    Connections {
+        target: nestPlc
+        function onEvent(message) {
+            page.actionMessage("PLC：" + message)
+            liveLogs.insert(0, {time: Qt.formatTime(new Date(), "hh:mm:ss"), type: "PLC", module: "机巢", content: message})
+            if (liveLogs.count > 300) liveLogs.remove(liveLogs.count - 1)
+        }
+    }
     property bool thermal: false
     // 云台指令目标值（滑条用；真实角度以 gimbalLink 回报为准）
     property real pitchCmd: 0
@@ -500,14 +506,14 @@ Item {
                     x: 10; y: 8; width: parent.width - 20
                     Image { width: 105; height: 98; source: "qrc:/assets/nest.png"; fillMode: Image.PreserveAspectFit }
                     Column {
-                        width: 135; spacing: 6
-                        Row { Text { text: "机巢"; color: "white"; font.pixelSize: 16; font.bold: true; width: 82 } StatusDot { text: "演示"; dotColor: "#8394a3"; textColor: "#9aafc0" } }
-                        Text { text: "机巢型号    HIVE-01"; color: "#cddcec"; font.pixelSize: 13 }
-                        Text { text: "舱门状态    " + (page.nestOpen ? "已打开" : "已关闭"); color: "#00e787"; font.pixelSize: 13 }
-                        Text { text: "无人机      机内"; color: "#00e787"; font.pixelSize: 13 }
-                        Text { text: "充电状态    " + (page.charging ? "充电中" : "已停止"); color: "#00e787"; font.pixelSize: 13 }
-                        Text { text: "环境温度    23.5 ℃"; color: "#cddcec"; font.pixelSize: 13 }
-                        Text { text: "环境湿度    45 %"; color: "#cddcec"; font.pixelSize: 13 }
+                        width: 145; spacing: 6
+                        Row { Text { text: "机巢"; color: "white"; font.pixelSize: 16; font.bold: true; width: 82 } StatusDot { text: nestPlc.protocolVerified ? "协议在线" : "未连接"; dotColor: nestPlc.protocolVerified ? "#00db80" : "#8394a3"; textColor: dotColor } }
+                        Text { text: "控制器      M511S"; color: "#cddcec"; font.pixelSize: 13 }
+                        Text { width: parent.width; wrapMode: Text.WordWrap; text: "舱门  " + nestPlc.doorState; color: nestPlc.feedbackFresh ? "#00e787" : "#9fb9ce"; font.pixelSize: 12 }
+                        Text { text: "无人机      未接入检测"; color: "#9fb9ce"; font.pixelSize: 13 }
+                        Text { text: "充电状态    未接入"; color: "#9fb9ce"; font.pixelSize: 13 }
+                        Text { text: "环境温度    未接入"; color: "#cddcec"; font.pixelSize: 13 }
+                        Text { text: "环境湿度    未接入"; color: "#cddcec"; font.pixelSize: 13 }
                     }
                 }
             }
@@ -896,22 +902,22 @@ Item {
                         width: 145; spacing: 8
                         Image { width: 145; height: 125; source: "qrc:/assets/nest.png"; fillMode: Image.PreserveAspectFit }
                         Text { text: "机巢当前状态："; color: "#dce9f7"; font.pixelSize: 13 }
-                        Text { text: page.nestOpen ? "已打开" : "已关闭"; color: "#00e787"; font.pixelSize: 14; font.bold: true }
+                        Text { text: nestPlc.doorState; width: 145; wrapMode: Text.WordWrap; color: nestPlc.feedbackFresh ? "#00e787" : "#9fb9ce"; font.pixelSize: 14; font.bold: true }
                     }
                     Column {
                         width: 118; spacing: 8
-                        GButton { width: 112; height: 36; text: "打开舱门"; fill: "#00af64"; onClicked: {page.nestOpen=true; page.actionMessage("演示舱门已打开，未发送机巢指令")} }
-                        GButton { width: 112; height: 36; text: "关闭舱门"; onClicked: {page.nestOpen=false; page.actionMessage("演示舱门已关闭")} }
-                        GButton { width: 112; height: 36; text: "开始充电"; onClicked: {page.charging=true; page.actionMessage("演示充电状态已开启")} }
-                        GButton { width: 112; height: 36; text: "停止充电"; onClicked: {page.charging=false; page.actionMessage("演示充电状态已停止")} }
+                        GButton { width: 112; height: 36; text: "打开舱门"; fill: "#00af64"; objectName: "nestOpenButton"; enabled: nestPlc.canMove; onClicked: nestPlc.sendCommand(1) }
+                        GButton { width: 112; height: 36; text: "关闭舱门"; objectName: "nestCloseButton"; enabled: nestPlc.canMove; onClicked: nestPlc.sendCommand(2) }
+                        GButton { objectName: "nestStopButton"; width: 112; height: 36; text: "停止舱门"; fill: "#a45d19"; enabled: nestPlc.canStop; onClicked: nestPlc.sendCommand(3) }
+                        Text { width: 112; text: nestPlc.writeEnabled ? "写入已启用" : "只读 / 未就绪"; wrapMode: Text.WordWrap; color: "#9fb9ce"; font.pixelSize: 12 }
                         GButton { width: 112; height: 36; text: "机巢设置"; onClicked: page.requestSettings() }
                     }
                     Column {
                         spacing: 9
                         Text { text: "机巢状态"; color: "white"; font.pixelSize: 14; font.bold: true }
                         Repeater {
-                            model: ["在线", page.nestOpen ? "舱门已打开" : "舱门已关闭", "无人机 机内", page.charging ? "充电中" : "已停止", "温度 23.5 ℃", "湿度 45 %", "供电 正常"]
-                            delegate: Row { spacing: 8; Rectangle { width: 11; height: 11; radius: 6; color: "#00db80"; anchors.verticalCenter: parent.verticalCenter } Text { text: modelData; color: "#cfe0ef"; font.pixelSize: 12 } }
+                            model: [nestPlc.connected ? "TCP 已连接" : "TCP 未连接", nestPlc.protocolVerified ? "Modbus 已响应" : "协议待验证", nestPlc.feedbackFresh ? "反馈有效" : "反馈未就绪", "故障 " + (nestPlc.feedbackFresh ? nestPlc.faultCode : "未知"), nestPlc.feedbackFresh && (nestPlc.flags & 32) ? "联锁禁止" : "联锁 " + (nestPlc.feedbackFresh ? "未触发" : "未知"), nestPlc.feedbackFresh && (nestPlc.flags & 64) ? "急停触发" : "急停 " + (nestPlc.feedbackFresh ? "未触发" : "未知") ]
+                            delegate: Row { spacing: 8; Rectangle { width: 11; height: 11; radius: 6; color: nestPlc.feedbackFresh && !nestPlc.faultCode && !(nestPlc.flags & 0x70) ? "#00db80" : "#8394a3"; anchors.verticalCenter: parent.verticalCenter } Text { text: modelData; color: "#cfe0ef"; font.pixelSize: 12 } }
                         }
                     }
                 }

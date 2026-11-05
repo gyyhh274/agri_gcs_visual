@@ -14,6 +14,7 @@ add_executable(agri_gcs_visual MACOSX_BUNDLE
     src/OfflineMapSource.cpp src/OfflineMapSource.h
     src/NestPosition.cpp src/NestPosition.h
     src/AircraftProfile.cpp src/AircraftProfile.h
+    src/NestPlc.cpp src/NestPlc.h src/ModbusTcpClient.cpp src/ModbusTcpClient.h
     src/GroundLink.cpp src/GroundLink.h
     src/OnboardManager.cpp src/OnboardManager.h
     src/GimbalLink.cpp src/GimbalLink.h
@@ -76,11 +77,16 @@ option(AGRI_GCS_BUILD_TESTS "Build Qt UI smoke tests" OFF)
 if(AGRI_GCS_BUILD_TESTS)
     find_package(Qt5 5.15 REQUIRED COMPONENTS Test)
     enable_testing()
-    add_executable(ui_smoke tests/tst_ui.cpp src/AsyncTileMapItem.cpp src/AsyncTileMapItem.h src/OfflineMapSource.cpp src/OfflineMapSource.h src/NestPosition.cpp src/NestPosition.h src/AircraftProfile.cpp src/AircraftProfile.h src/GroundLink.cpp src/GroundLink.h src/NativeVideoItem.cpp src/NativeVideoItem.h qml.qrc)
+    add_executable(ui_smoke tests/tst_ui.cpp src/GimbalLink.cpp src/GimbalLink.h src/PhotoLibrary.cpp src/PhotoLibrary.h src/RelayDiscovery.cpp src/RelayDiscovery.h src/NestPlc.cpp src/NestPlc.h src/ModbusTcpClient.cpp src/ModbusTcpClient.h src/AsyncTileMapItem.cpp src/AsyncTileMapItem.h src/OfflineMapSource.cpp src/OfflineMapSource.h src/NestPosition.cpp src/NestPosition.h src/AircraftProfile.cpp src/AircraftProfile.h src/GroundLink.cpp src/GroundLink.h src/NativeVideoItem.cpp src/NativeVideoItem.h qml.qrc)
     target_link_libraries(ui_smoke PRIVATE Qt5::Core Qt5::Gui Qt5::Qml
         Qt5::Quick Qt5::QuickControls2 Qt5::Test Qt5::Positioning Qt5::Concurrent Qt5::Network)
     add_test(NAME ui_smoke COMMAND ui_smoke)
     set_tests_properties(ui_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;AGRI_GCS_TEST_TILES=${CMAKE_CURRENT_SOURCE_DIR}/maps/maxar-auckland;AGRI_GCS_TEST_SATELLITE=${CMAKE_CURRENT_SOURCE_DIR}/maps/maxar-auckland")
+    add_executable(nest_plc_test tests/tst_nest_plc.cpp src/NestPlc.cpp src/NestPlc.h src/ModbusTcpClient.cpp src/ModbusTcpClient.h)
+    target_include_directories(nest_plc_test PRIVATE src)
+    target_compile_definitions(nest_plc_test PRIVATE PLC_SIMULATOR_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tools/plc_simulator.py")
+    target_link_libraries(nest_plc_test PRIVATE Qt5::Core Qt5::Network Qt5::Test)
+    add_test(NAME nest_plc_test COMMAND nest_plc_test)
     add_executable(onboard_manager_test tests/tst_onboard_manager.cpp src/OnboardManager.cpp src/OnboardManager.h)
     target_link_libraries(onboard_manager_test PRIVATE Qt5::Core Qt5::Network Qt5::Test)
     add_test(NAME onboard_manager_test COMMAND onboard_manager_test)
@@ -91,6 +97,7 @@ if(AGRI_GCS_BUILD_TESTS)
     target_link_libraries(gimbal_link_test PRIVATE Qt5::Core Qt5::Network Qt5::Test)
     add_test(NAME gimbal_link_test COMMAND gimbal_link_test)
     add_executable(task_session_test tests/tst_task_session.cpp
+        src/NestPlc.cpp src/NestPlc.h src/ModbusTcpClient.cpp src/ModbusTcpClient.h
         src/AsyncTileMapItem.cpp src/OfflineMapSource.cpp src/NestPosition.cpp
         src/AircraftProfile.cpp src/GroundLink.cpp src/GimbalLink.cpp
         src/PhotoLibrary.cpp src/RelayDiscovery.cpp src/NativeVideoItem.cpp qml.qrc)

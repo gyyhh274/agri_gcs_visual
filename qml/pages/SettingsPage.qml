@@ -12,14 +12,14 @@ Item {
     readonly property string taskGatewayHost: managedConnection ? "127.0.0.1" : String(values.droneIp)
     readonly property int taskGatewayPort: managedConnection ? onboardManager.tunnelPort : Number(values.dronePort)
     function connectTaskGateway() { groundLink.connectToGateway(taskGatewayHost, taskGatewayPort) }
-    property bool nestConnected: false
+    readonly property bool nestConnected: nestPlc.protocolVerified
     property bool thermal: false
     property string rtkPassword: "12345678"
     property bool nestFieldsEdited: false
     property var sectionNames: ["连接设置", "无人机设置", "机巢设置", "任务参数", "地图设置", "告警与安全", "存储与数据", "系统维护", "机载程序"]
     property var values: ({
         gatewayProtocol: "ros-gateway-v1", droneIp: "127.0.0.1", dronePort: "8765", droneAuto: false,
-        nestIp: "192.168.1.100", nestPort: "8080", nestAuto: true,
+        nestIp: "192.168.2.8", nestPort: "502", nestAuto: false,
         videoUrl: "rtsp://192.168.1.10:8554/live", videoPort: "8554", controlPort: "8765",
         rtkEnabled: true, rtkHost: "192.168.1.200", rtkPort: "2101", rtkAccount: "user", rtkMount: "RTCM32_GGB",
         deviceTime: "2024-12-26 15:30:24", ntpEnabled: true, ntpServer: "pool.ntp.org",
@@ -145,7 +145,7 @@ Item {
                     Repeater {
                         model: [
                             ["✣", "无人机连接", page.droneConnected ? "已连接" : "未连接", page.taskGatewayHost],
-                            ["▣", "机巢连接", page.nestConnected ? "已连接" : "未连接", page.values.nestIp],
+                            ["▣", "机巢连接", page.nestConnected ? "已连接" : "未连接", nestPlc.configuration.host],
                             ["▧", "图传状态", VideoConfig.runtimeLive ? "实时" : (VideoConfig.runtimePhase === "connecting" ? "连接中" : VideoConfig.runtimePhase === "retry" ? "重连中" : "未接入"), VideoConfig.runtimeUsingPipeline ? "GStreamer" : "Qt"], ["●", "定位状态", groundLink.odomFresh ? "world 有效" : "未获得", "局部坐标"],
                             ["⌖", "RTK状态", "未接入", ""], ["▰", "网络状态", groundLink.connected ? "网关已连" : "未连接", groundLink.endpoint]
                         ]
@@ -196,7 +196,7 @@ Item {
                         delegate: GCard {
                             property bool isDrone: index === 0
                             property bool connected: isDrone ? page.droneConnected : page.nestConnected
-                            property bool linkActive: isDrone ? (groundLink.connected || groundLink.connecting) : connected
+                            property bool linkActive: isDrone ? (groundLink.connected || groundLink.connecting) : (nestPlc.connected || nestPlc.connecting)
                             width: (parent.width - parent.spacing) / 2; height: parent.height; title: modelData
                             StatusDot { anchors.right: parent.right; anchors.rightMargin: 16; y: -29; text: connected ? "已连接" : "未连接"; dotColor: connected ? "#00db80" : "#8394a3"; textColor: dotColor }
                             Column {
@@ -207,7 +207,7 @@ Item {
                                     Column {
                                         width: parent.width - 194; anchors.verticalCenter: parent.verticalCenter; spacing: 4
                                         Repeater {
-                                            model: isDrone ? [["型号", aircraftProfile.model], ["飞控", aircraftProfile.autopilot], ["固件版本", "v1.13.0"], ["SN", "1581F5ZC123456"]] : [["机巢型号", "HIVE-01"], ["固件版本", "v2.1.5"], ["SN", "HIVE01ZC987654"]]
+                                            model: isDrone ? [["型号", aircraftProfile.model], ["飞控", aircraftProfile.autopilot], ["固件版本", "v1.13.0"], ["SN", "1581F5ZC123456"]] : [["控制器", "M511S"], ["协议", "Modbus TCP"], ["反馈", nestPlc.feedbackFresh ? "有效" : "未就绪"]]
                                             delegate: Row {
                                                 width: parent.width; height: 24
                                                 FormLabel { width: 72; height: 24; text: modelData[0] }
@@ -218,16 +218,18 @@ Item {
                                 }
                                 Rectangle { width: parent.width; height: 1; color: "#15344b" }
                                 Item { width: 1; height: 5 }
-                                ConnectionMode { configuration: page.values; onEdited: page.setValue(key, value); configKey: isDrone ? "droneAuto" : "nestAuto" }
-                                Row { width: parent.width; height: 31; FormLabel { width: 94; text: "连接类型" } ChoiceField { width: parent.width - 94; model: isDrone ? ["机载 ROS 网关（Wi-Fi）"] : ["局域网 (LAN)", "串口 (UART)", "UDP"] } }
-                                FieldRow { visible: !isDrone || !page.managedConnection; height: visible ? implicitHeight : 0; configuration: page.values; onEdited: page.setValue(key, value); label: isDrone ? "网关地址" : "IP 地址"; configKey: isDrone ? "droneIp" : "nestIp" }
+                                ConnectionMode { visible: isDrone; height: visible ? implicitHeight : 0; configuration: page.values; onEdited: page.setValue(key, value); configKey: isDrone ? "droneAuto" : "nestAuto" }
+                                Row { width: parent.width; height: 31; FormLabel { width: 94; text: "连接类型" } ChoiceField { width: parent.width - 94; model: isDrone ? ["机载 ROS 网关（Wi-Fi）"] : ["Modbus TCP（Wi-Fi / LAN）"] } }
+                                FieldRow { visible: isDrone && !page.managedConnection; height: visible ? implicitHeight : 0; configuration: page.values; onEdited: page.setValue(key, value); label: isDrone ? "网关地址" : "IP 地址"; configKey: isDrone ? "droneIp" : "nestIp" }
                                 Row { visible: isDrone && page.managedConnection; height: visible ? 34 : 0; width: parent.width; FormLabel { width: 94; text: "任务隧道" } Text { text: page.taskGatewayHost + ":" + page.taskGatewayPort; color: "#dce8f4"; anchors.verticalCenter: parent.verticalCenter } }
-                                FieldRow { visible: !isDrone || !page.managedConnection; height: visible ? implicitHeight : 0; configuration: page.values; onEdited: page.setValue(key, value); label: "端口"; configKey: isDrone ? "dronePort" : "nestPort" }
+                                FieldRow { visible: isDrone && !page.managedConnection; height: visible ? implicitHeight : 0; configuration: page.values; onEdited: page.setValue(key, value); label: "端口"; configKey: isDrone ? "dronePort" : "nestPort" }
+                                Text { visible: !isDrone; height: visible ? 30 : 0; text: nestPlc.configuration.host + ":" + nestPlc.configuration.port + " · Unit " + nestPlc.configuration.unit; color: "#bcd2e4"; font.pixelSize: 13 }
+                                GButton { visible: !isDrone; height: visible ? 34 : 0; width: 190; text: "PLC 协议与映射调试"; onClicked: page.sectionIndex = 2 }
                                 Text { visible: isDrone; width: parent.width; height: visible ? 30 : 0; wrapMode: Text.WordWrap; color: "#8faec5"; font.pixelSize: 11; text: page.managedConnection ? "管理已连接；飞行栈的任务网关运行后才能连接遥测。" : "这是任务遥测连接；机载管理请进入「机载程序」。" }
                                 Row {
                                     width: parent.width; height: 42
                                     FormLabel { width: 94; height: 42; text: "连接状态" }
-                                    Text { width: parent.width - 194; height: parent.height; text: isDrone ? groundLink.status : "未连接（演示）"; color: connected ? "#00e787" : "#9fb4c6"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                                    Text { width: parent.width - 194; height: parent.height; text: isDrone ? groundLink.status : nestPlc.status; color: connected ? "#00e787" : "#9fb4c6"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
                                     GButton {
                                         width: 100; height: 35; anchors.verticalCenter: parent.verticalCenter; text: linkActive ? "断开连接" : "连接设备"
                                         onClicked: {
@@ -235,7 +237,7 @@ Item {
                                                 if (linkActive) groundLink.disconnectFromGateway()
                                                 else page.connectTaskGateway()
                                                 page.notify(groundLink.status)
-                                            } else page.notify("机巢仍为演示功能，未接入真实设备")
+                                            } else { if (linkActive) nestPlc.disconnectPlc(); else nestPlc.connectPlc() }
                                         }
                                     }
                                 }
@@ -465,7 +467,7 @@ Item {
             title: page.sectionNames[page.sectionIndex]
             property var sectionFields: [[],
                 [["设备名称", "aircraftName"], ["无人机型号", "aircraftModel"], ["飞控类型", "autopilot"], ["飞控串口", "serialPort"], ["波特率", "baudRate"], ["返航高度（m）", "returnHeight"]],
-                [["机巢名称", "nestName"], ["机巢型号", "nestModel"], ["机巢经度", "nestLongitude"], ["机巢纬度", "nestLatitude"], ["充电目标（%）", "nestChargeThreshold"], ["通风温度（℃）", "nestFanTemperature"]],
+                [["机巢名称", "nestName"], ["机巢经度", "nestLongitude"], ["机巢纬度", "nestLatitude"]],
                 [["飞行高度（m）", "flightHeight"], ["巡航速度（m/s）", "flightSpeed"], ["航点停留（秒）", "waypointHold"], ["拍摄间隔（秒）", "photoInterval"], ["航线间距（m）", "routeSpacing"]],
                 [["离线瓦片目录", "tileDirectory"], ["瓦片格式（XYZ / TMS）", "tileFormat"]],
                 [["低电量告警（%）", "lowBattery"], ["严重低电量（%）", "criticalBattery"], ["风速上限（m/s）", "windLimit"], ["失联超时（秒）", "lostLinkTimeout"], ["飞行高度上限（m）", "maxFlightHeight"]],
@@ -475,8 +477,9 @@ Item {
             Column {
                 id: confCol
                 x: 24; y: 20; width: parent.width - 48; spacing: 15
+                Loader { width: parent.width; active: page.sectionIndex === 2; sourceComponent: Component { NestPlcPanel {} } }
                 Text { text: page.sectionNames[page.sectionIndex] + "参数"; color: "#e6f0fb"; font.pixelSize: 18; font.bold: true }
-                Text { width: parent.width; text: "本地配置 · 演示模式"; color: "#7898b3"; font.pixelSize: 13 }
+                Text { width: parent.width; text: page.sectionIndex === 2 ? "位置配置与 PLC 通信" : "本地配置 · 演示模式"; color: "#7898b3"; font.pixelSize: 13 }
                 Rectangle { width: parent.width; height: 1; color: "#17374e" }
                 Repeater {
                     model: configurationCard.sectionFields[page.sectionIndex]

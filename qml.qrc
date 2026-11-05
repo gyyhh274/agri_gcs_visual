@@ -3,6 +3,7 @@
     <file>qml/Main.qml</file>
     <file>qml/components/GCard.qml</file>
     <file>qml/components/ModuleControlPanel.qml</file>
+    <file>qml/components/NestPlcPanel.qml</file>
     <file>qml/components/GButton.qml</file>
     <file>qml/components/GField.qml</file>
     <file>qml/components/StatusDot.qml</file>

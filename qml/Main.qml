@@ -152,7 +152,7 @@ ApplicationWindow {
                         spacing: 7
                         Rectangle { width: 12; height: 12; radius: 6; color: "#8394a3"; anchors.verticalCenter: parent.verticalCenter }
                         Text { text: "机巢："; color: "#e4effa"; font.pixelSize: 14 }
-                        Text { text: "演示"; color: "#9aafc0"; font.pixelSize: 14; font.bold: true }
+                        Text { text: nestPlc.feedbackFresh ? "反馈在线" : nestPlc.protocolVerified ? "协议在线" : nestPlc.connected ? "TCP 已连" : "未连接"; color: nestPlc.feedbackFresh ? "#00db80" : "#9aafc0"; font.pixelSize: 14; font.bold: true }
                     }
                 }
 

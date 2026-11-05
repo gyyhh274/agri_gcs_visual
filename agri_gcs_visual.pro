@@ -31,3 +31,6 @@ QMAKE_TARGET_BUNDLE_PREFIX = local.agri.gcs
 
 SOURCES += src/OnboardManager.cpp
 HEADERS += src/OnboardManager.h
+
+SOURCES += src/NestPlc.cpp src/ModbusTcpClient.cpp
+HEADERS += src/NestPlc.h src/ModbusTcpClient.h
