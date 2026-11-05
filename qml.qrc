@@ -27,6 +27,5 @@
     <file>qml/components/FieldRow.qml</file>
     <file>qml/components/ChoiceField.qml</file>
     <file>qml/components/SwitchRow.qml</file>
-    <file>qml/components/ConnectionMode.qml</file>
   </qresource>
 </RCC>

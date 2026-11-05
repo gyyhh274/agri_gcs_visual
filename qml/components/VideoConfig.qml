@@ -43,6 +43,14 @@ Item {
      * 也可以填完整的 rtsp:// 地址，此时原样使用。
      */
     property string host: "192.168.2.113"
+    /* SSH 用户名。隧道服务（mapping_tunnel.py）直接读这个字段决定以哪个账号登录，
+     * 所以界面上改这一格就等于改隧道身份，不再藏在 systemd 单元里。 */
+    property string sshUser: "nv"
+    /* 认证方式：false = 密钥（默认，隧道读 ~/.ssh/agri_*_ed25519）；
+     *           true  = 用户名 + 密码。密码只写在本机配置文件里（600），
+     *                   不写日志、不出现在进程参数中。 */
+    property bool sshUsePassword: false
+    property string sshPassword: "" 
     readonly property int rtspPort: 8554
     readonly property string streamPath: "a8mini"    // MediaMTX 上的路径名
     readonly property string url: host.indexOf("rtsp://") === 0
@@ -93,6 +101,9 @@ Item {
     Settings {
         category: "VideoStream"
         property alias host: cfg.host
+        property alias sshUser: cfg.sshUser
+        property alias sshUsePassword: cfg.sshUsePassword
+        property alias sshPassword: cfg.sshPassword
         property alias userId: cfg.userId
         property alias userPw: cfg.userPw
         property alias codecIndex: cfg.codecIndex

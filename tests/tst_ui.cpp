@@ -8,6 +8,7 @@
 #include <QImage>
 #include <QPainter>
 #include <QSettings>
+#include <QVariantList>
 #include <QLineF>
 #include <cmath>
 #include <QQuickWindow>
@@ -102,11 +103,18 @@ class TestRelayDiscovery : public QObject
     Q_PROPERTY(QString status MEMBER m_status CONSTANT)
     Q_PROPERTY(QString foundHost MEMBER m_foundHost CONSTANT)
     Q_PROPERTY(int progress MEMBER m_progress CONSTANT)
+    Q_PROPERTY(bool checking MEMBER m_checking CONSTANT)
+    Q_PROPERTY(QVariantList services MEMBER m_services CONSTANT)
+    Q_PROPERTY(QString checkSummary MEMBER m_check_summary CONSTANT)
 public:
     bool m_scanning = false;
     int m_progress = 0;
     QString m_status = QStringLiteral("UI 测试不扫描设备"), m_foundHost;
     Q_INVOKABLE void scan(const QString&) {}
+    Q_INVOKABLE void checkAll(const QString&, const QString&) {}
+    bool m_checking = false;
+    QVariantList m_services;
+    QString m_check_summary = QStringLiteral("UI 测试不探测");
 signals:
     void found(const QString& host);
 };

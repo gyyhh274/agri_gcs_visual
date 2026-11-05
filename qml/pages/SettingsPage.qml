@@ -164,8 +164,9 @@ Item {
 
     Component {
         id: connectionSettings
-        // 用 Flickable 包起来：内容超出可视高度时可以用鼠标滚轮上下滑，
-        // 否则底部的行会被裁掉且无法查看（实测小窗口下会切掉 1~2 行）
+        /* 一张卡说清「连谁、用什么身份、通没通」：
+         *   地址 + 用户 → 派生 7 项服务，逐项做协议握手，而不是只看端口开没开。
+         * 端口、隧道端点收进下面的「高级」，因为它们是常量，不该占主流程。 */
         Flickable {
             id: connFlick
             contentWidth: width
@@ -174,264 +175,303 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
             Column {
-            id: connContent
-            width: connFlick.width
-            spacing: 10
-            GCard {
-                width: parent.width; height: 438; title: page.overviewMode ? "系统设置" : "连接设置"
-                Row {
-                    anchors.fill: parent; anchors.margins: 6; spacing: 8
-                    Repeater {
-                        model: ["无人机连接", "机巢连接"]
-                        delegate: GCard {
-                            property bool isDrone: index === 0
-                            property bool connected: isDrone ? page.droneConnected : page.nestConnected
-                            property bool linkActive: isDrone ? (groundLink.connected || groundLink.connecting) : connected
-                            width: (parent.width - parent.spacing) / 2; height: parent.height; title: modelData
-                            StatusDot { anchors.right: parent.right; anchors.rightMargin: 16; y: -29; text: connected ? "已连接" : "未连接"; dotColor: connected ? "#00db80" : "#8394a3"; textColor: dotColor }
-                            Column {
-                                x: 10; y: 5; width: parent.width - 20; spacing: 5
-                                Row {
-                                    width: parent.width; height: 123; spacing: 13
-                                    Image { width: 181; height: 119; source: isDrone ? "qrc:/assets/drone.png" : "qrc:/assets/nest.png"; fillMode: Image.PreserveAspectFit }
-                                    Column {
-                                        width: parent.width - 194; anchors.verticalCenter: parent.verticalCenter; spacing: 4
-                                        Repeater {
-                                            model: isDrone ? [["型号", aircraftProfile.model], ["飞控", aircraftProfile.autopilot], ["固件版本", "v1.13.0"], ["SN", "1581F5ZC123456"]] : [["机巢型号", "HIVE-01"], ["固件版本", "v2.1.5"], ["SN", "HIVE01ZC987654"]]
-                                            delegate: Row {
-                                                width: parent.width; height: 24
-                                                FormLabel { width: 72; height: 24; text: modelData[0] }
-                                                Text { height: 24; width: parent.width - 72; text: modelData[1]; color: "#dce8f4"; font.pixelSize: modelData[0] === "SN" ? 11 : 13; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
-                                            }
-                                        }
-                                    }
-                                }
-                                Rectangle { width: parent.width; height: 1; color: "#15344b" }
-                                Item { width: 1; height: 5 }
-                                ConnectionMode { configuration: page.values; onEdited: page.setValue(key, value); configKey: isDrone ? "droneAuto" : "nestAuto" }
-                                Row { width: parent.width; height: 31; FormLabel { width: 94; text: "连接类型" } ChoiceField { width: parent.width - 94; model: isDrone ? ["机载 ROS 网关（Wi-Fi）"] : ["局域网 (LAN)", "串口 (UART)", "UDP"] } }
-                                FieldRow { configuration: page.values; onEdited: page.setValue(key, value); label: isDrone ? "网关地址" : "IP 地址"; configKey: isDrone ? "droneIp" : "nestIp" }
-                                FieldRow { configuration: page.values; onEdited: page.setValue(key, value); label: "端口"; configKey: isDrone ? "dronePort" : "nestPort" }
-                                Row {
-                                    width: parent.width; height: 42
-                                    FormLabel { width: 94; height: 42; text: "连接状态" }
-                                    Text { width: parent.width - 194; height: parent.height; text: isDrone ? groundLink.status : "未连接（演示）"; color: connected ? "#00e787" : "#9fb4c6"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
-                                    GButton {
-                                        width: 100; height: 35; anchors.verticalCenter: parent.verticalCenter; text: linkActive ? "断开连接" : "连接设备"
-                                        onClicked: {
-                                            if (isDrone) {
-                                                if (linkActive) groundLink.disconnectFromGateway()
-                                                else groundLink.connectToGateway(String(page.values.droneIp), Number(page.values.dronePort))
-                                                page.notify(groundLink.status)
-                                            } else page.notify("机巢仍为演示功能，未接入真实设备")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Row {
-                // 高度按「网络与通信」卡片的实际内容算：
-                //   7 行（机载电脑/派生地址/发现状态/传输编码/认证账号/图传状态/机载遥测）
-                //   = 31+30+20+31+31+31+31 = 205，行距 6×2=12，标题与内边距约 46 → 263
-                // 之前是 248，做自动发现时加了一行"未扫描"提示，把最后一行顶出卡片外
-                // （表现为「机载遥测 / 测试连接」被切掉）。留 15px 余量。
-                width: parent.width; height: 278; spacing: 8
+                id: connContent
+                width: connFlick.width
+                spacing: 10
+
                 GCard {
-                    id: networkCard
-                    width: Math.round((parent.width - parent.spacing) * 0.535); height: parent.height; title: "网络与通信"
+                    id: onboardCard
+                    width: parent.width
+                    height: relayDiscovery.services.length > 0 ? 425 : 285
+                    title: "机载连接"
+
+                    /* 全部非 skip 项都通过才算就绪；空表时不算就绪。 */
+                    property bool allReady: {
+                        var list = relayDiscovery.services
+                        if (!list || list.length === 0) return false
+                        for (var i = 0; i < list.length; ++i) {
+                            var state = list[i].state
+                            if (state === "fail" || state === "pending") return false
+                        }
+                        return true
+                    }
+
+                    StatusDot {
+                        anchors.right: parent.right; anchors.rightMargin: 18; y: -29
+                        width: 210
+                        text: relayDiscovery.services.length === 0 ? "未测试"
+                              : (relayDiscovery.checking ? "测试中…"
+                                 : (onboardCard.allReady ? "全部就绪" : relayDiscovery.checkSummary))
+                        dotColor: relayDiscovery.services.length === 0 ? "#8394a3"
+                                  : (relayDiscovery.checking ? "#f0a51e"
+                                     : (onboardCard.allReady ? "#00db80" : "#e2566b"))
+                        textColor: dotColor
+                    }
+
                     Column {
-                        x: 14; y: 6; width: parent.width - 28; spacing: 2
-                        // ── 机载电脑：图传 / 云台 / 照片 都在这台机器上 ──
-                        // 只需填这一个地址，其余端口与路径自动推导（见下行）。
-                        // 地址会随 DHCP 变化 → 用「自动发现」扫出来
+                        x: 16; y: 6; width: parent.width - 32; spacing: 7
+
+                        /* ── 唯一的两个输入 ─────────────────────────────── */
                         Row {
-                            width: parent.width; height: 31
-                            FormLabel { width: 114; text: "机载电脑" }
+                            width: parent.width; height: 33; spacing: 8
+                            FormLabel { width: 76; height: 33; text: "机载电脑" }
                             ValueField {
-                                width: 178
+                                width: 190; height: 33
                                 text: VideoConfig.host
                                 placeholderText: "IP 或主机名"
                                 onTextEdited: VideoConfig.host = text.trim()
                             }
-                            Item { width: 6; height: 1 }
+                            FormLabel { width: 36; height: 33; text: "用户"; horizontalAlignment: Text.AlignRight }
+                            ValueField {
+                                width: 92; height: 33
+                                text: VideoConfig.sshUser
+                                placeholderText: "nv"
+                                onTextEdited: VideoConfig.sshUser = text.trim()
+                            }
                             GButton {
-                                width: 88; height: 31
+                                width: 104; height: 33
                                 text: relayDiscovery.scanning ? "扫描中…" : "自动发现"
                                 fill: relayDiscovery.scanning ? "#2a5d80" : "#0a6b4a"
                                 onClicked: relayDiscovery.scan(VideoConfig.host)
                             }
-                            Item { width: 6; height: 1 }
+                        }
+                        Row {
+                            width: parent.width; height: 31; spacing: 8
+                            FormLabel { width: 76; text: "认证" }
+                            Row {
+                                width: 132; height: 31; spacing: 12
+                                Repeater {
+                                    model: ["密钥", "密码"]
+                                    delegate: Item {
+                                        width: 56; height: 31
+                                        Rectangle {
+                                            x: 0; y: 8; width: 15; height: 15; radius: 8
+                                            color: VideoConfig.sshUsePassword === (index === 1) ? "#087dff" : "transparent"
+                                            border.color: "#5f8bab"
+                                            Rectangle {
+                                                anchors.centerIn: parent; width: 5; height: 5; radius: 3; color: "white"
+                                                visible: VideoConfig.sshUsePassword === (index === 1)
+                                            }
+                                        }
+                                        Text {
+                                            x: 24; anchors.verticalCenter: parent.verticalCenter
+                                            text: modelData; color: "#dce8f4"; font.pixelSize: 13
+                                        }
+                                        MouseArea { anchors.fill: parent; onClicked: VideoConfig.sshUsePassword = (index === 1) }
+                                    }
+                                }
+                            }
+                            ValueField {
+                                width: 240; height: 31
+                                text: VideoConfig.sshPassword
+                                echoMode: TextInput.Password
+                                enabled: VideoConfig.sshUsePassword
+                                opacity: VideoConfig.sshUsePassword ? 1 : 0.45
+                                placeholderText: VideoConfig.sshUsePassword ? "机载电脑登录密码"
+                                                                          : "使用密钥 ~/.ssh/agri_*.ed25519"
+                                onTextEdited: VideoConfig.sshPassword = text
+                            }
+                            Text {
+                                width: parent.width - 480; height: 31
+                                text: VideoConfig.sshUsePassword ? "仅存本机配置（600）" : "密钥由隧道服务读取"
+                                color: "#7f97ab"; font.pixelSize: 11
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        /* ── 设备侧账号（视频中转的只读账号） ───────────── */
+                        Row {
+                            width: parent.width; height: 31; spacing: 8
+                            FormLabel { width: 76; text: "视频账号" }
+                            ValueField { width: 110; height: 31; text: VideoConfig.userId; onTextEdited: VideoConfig.userId = text }
+                            ValueField {
+                                width: 210; height: 31
+                                text: VideoConfig.userPw
+                                echoMode: TextInput.Password
+                                placeholderText: "MediaMTX 只读口令"
+                                onTextEdited: VideoConfig.userPw = text
+                            }
                             GButton {
-                                width: 64; height: 31
+                                width: 76; height: 31
                                 text: VideoConfig.enabled ? "停止" : "拉流"
                                 fill: VideoConfig.enabled ? "#2a5d80" : "#087dff"
                                 onClicked: VideoConfig.enabled = !VideoConfig.enabled
                             }
+                            GButton { width: 64; height: 31; text: "重连"; onClicked: VideoConfig.reconnectRequest += 1 }
                         }
-                        // 由上面一个地址推导出的全部服务地址（只读）
+
+                        /* ── 一键自检 ───────────────────────────────────── */
                         Row {
-                            width: parent.width; height: 30
-                            FormLabel { width: 114; text: "派生地址" }
-                            FormLabel {
-                                width: parent.width - 114
-                                text: VideoConfig.derivedSummary
-                                color: "#8fa6ba"; font.pixelSize: 11
-                            }
-                        }
-                        // 自动发现的进度 / 结果
-                        Row {
-                            width: parent.width; height: 20
-                            Item { width: 114; height: 1 }
-                            FormLabel {
-                                width: parent.width - 114
-                                text: relayDiscovery.status
-                                color: relayDiscovery.foundHost.length > 0 ? "#00e787" : "#6d8496"
-                                font.pixelSize: 10
-                            }
-                        }
-                        Row {
-                            width: parent.width; height: 31
-                            FormLabel { width: 114; text: "传输 / 编码" }
-                            ChoiceField {
-                                width: 118
-                                model: VideoConfig.transportNames
-                                currentIndex: VideoConfig.transportIndex
-                                onActivated: VideoConfig.transportIndex = index
-                            }
-                            Item { width: 8; height: 1 }
-                            ChoiceField {
-                                width: 130
-                                model: VideoConfig.codecNames
-                                currentIndex: VideoConfig.codecIndex
-                                onActivated: VideoConfig.codecIndex = index
-                            }
-                        }
-                        Row {
-                            width: parent.width; height: 31
-                            FormLabel { width: 114; text: "认证账号" }
-                            ValueField {
-                                width: 96; height: 31
-                                text: VideoConfig.userId
-                                onTextEdited: VideoConfig.userId = text
-                            }
-                            Item { width: 6; height: 1 }
-                            ValueField {
-                                width: parent.width - 114 - 96 - 6; height: 31
-                                text: VideoConfig.userPw
-                                echoMode: TextInput.Password
-                                onTextEdited: VideoConfig.userPw = text
-                            }
-                        }
-                        Row {
-                            width: parent.width; height: 31
-                            FormLabel { width: 114; text: "图传状态" }
-                            Rectangle {
-                                width: 9; height: 9; radius: 5; anchors.verticalCenter: parent.verticalCenter
-                                color: VideoConfig.runtimeLive ? "#00db80"
-                                     : (VideoConfig.runtimePhase === "connecting" || VideoConfig.runtimePhase === "retry") ? "#f0a51e" : "#8394a3"
+                            width: parent.width; height: 36; spacing: 10
+                            GButton {
+                                width: 120; height: 33
+                                text: relayDiscovery.checking ? "测试中…" : "测试连接"
+                                fill: "#087dff"
+                                onClicked: relayDiscovery.checkAll(VideoConfig.host, VideoConfig.sshUser)
                             }
                             Text {
-                                width: parent.width - 114 - 9 - 6 - 100
-                                anchors.verticalCenter: parent.verticalCenter
-                                leftPadding: 6
-                                text: VideoConfig.runtimeDetail
-                                color: VideoConfig.runtimeLive ? "#00e787" : "#9fb4c6"
-                                font.pixelSize: 11; elide: Text.ElideRight
-                            }
-                            ValueField {
-                                width: 52; height: 31
-                                text: String(VideoConfig.latency)
-                                onTextEdited: { var v = parseInt(text); if (!isNaN(v) && v >= 0) VideoConfig.latency = v }
-                            }
-                            GButton {
-                                width: 40; height: 31; text: "重连"
-                                onClicked: VideoConfig.reconnectRequest += 1
+                                width: parent.width - 130; height: 33
+                                text: relayDiscovery.checkSummary
+                                color: "#9fb4c6"; font.pixelSize: 12
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
                             }
                         }
-                        // 机载遥测（ROS 网关，只读）
+
+                        Rectangle { width: parent.width; height: 1; color: "#15344b" }
+
                         Row {
-                            width: parent.width; height: 33
-                            FormLabel { width: 114; text: "机载遥测" }
-                            FormLabel { width: 118; text: "ROS/TCP（只读）"; color: "#8fa6ba"; font.pixelSize: 11 }
-                            ValueField { width: 92; text: page.values.dronePort; onTextEdited: page.setValue("dronePort", text) }
-                            Item { width: 6; height: 1 }
-                            GButton { width: 96; height: 33; text: "测试连接"; fill: "#087dff"; onClicked: { groundLink.connectToGateway(String(page.values.droneIp), Number(page.values.dronePort)); page.notify(groundLink.status) } }
+                            width: parent.width; height: 20
+                            Text { width: 96; height: 20; text: "服务"; color: "#7f97ab"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter }
+                            Text { width: 166; height: 20; text: "地址"; color: "#7f97ab"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter }
+                            Text { width: 62; height: 20; text: "状态"; color: "#7f97ab"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter }
+                            Text { width: parent.width - 324; height: 20; text: "说明（协议握手结果）"; color: "#7f97ab"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter }
+                        }
+
+                        Repeater {
+                            model: relayDiscovery.services
+                            delegate: Item {
+                                width: parent.width; height: 25
+                                property var svc: modelData
+                                Text { width: 96; height: 25; text: svc.label; color: "#cbdbea"; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
+                                Text { x: 96; width: 166; height: 25; text: svc.endpoint; color: "#8fa6ba"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                                StatusDot {
+                                    x: 262; width: 62
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: svc.state === "ok" ? "就绪"
+                                          : svc.state === "fail" ? "失败"
+                                          : svc.state === "skip" ? "不验" : "测试中"
+                                    dotColor: svc.state === "ok" ? "#00db80"
+                                              : svc.state === "fail" ? "#e2566b" : "#8394a3"
+                                    textColor: dotColor
+                                }
+                                Text {
+                                    x: 324; width: parent.width - 324; height: 25
+                                    text: svc.detail
+                                    color: svc.state === "fail" ? "#e8a2ad" : "#9fb4c6"
+                                    font.pixelSize: 11; verticalAlignment: Text.AlignVCenter
+                                    elide: Text.ElideRight
+                                }
+                                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#0f2a3d" }
+                            }
+                        }
+
+                        Text {
+                            width: parent.width
+                            visible: relayDiscovery.services.length === 0
+                            text: "尚未测试。点「测试连接」会逐项做协议握手（SSH banner / RTSP / 照片 JSON / 点云 / 建图 / 遥测），因为只看端口能不能连是不够的：走代理时任何 IP 都会「连得上」。"
+                            height: 34
+                            color: "#6d8496"; font.pixelSize: 11; wrapMode: Text.WordWrap
                         }
                     }
                 }
+
+                /* ── 高级：端口与隧道端点（常量，收起来） ─────────────── */
                 GCard {
-                    width: parent.width - networkCard.width - parent.spacing; height: parent.height; title: "RTK设置"
+                    id: advancedCard
+                    width: parent.width
+                    height: advancedCard.collapsed ? 46 : 238
+                    title: "高级：端口与隧道端点（一般不需要改）"
+                    collapsible: true
                     Column {
-                        x: 13; y: 8; width: parent.width - 26; spacing: 5
-                        SwitchRow { configuration: page.values; onEdited: page.setValue(key, value); label: "启用RTK"; labelWidth: 78; configKey: "rtkEnabled"; height: 30 }
-                        Row {
-                            width: parent.width; height: 31
-                            FormLabel { width: 77; text: "连接方式" }
-                            ChoiceField { width: 107; model: ["网络RTK", "串口RTK"] }
-                            FormLabel { width: 77; text: "基站地址"; horizontalAlignment: Text.AlignHCenter }
-                            ValueField { width: parent.width - 261; text: page.values.rtkHost; font.pixelSize: 11; leftPadding: 5; rightPadding: 3; onTextEdited: page.setValue("rtkHost", text) }
+                        x: 16; y: 4; width: parent.width - 32; spacing: 3
+                        Repeater {
+                            model: [
+                                ["图传 RTSP", VideoConfig.host + ":8554/a8mini", "MediaMTX 中转，H.265，走 TCP"],
+                                ["云台指令", VideoConfig.host + ":37260", "UDP，经 siyi-gimbal-relay 转发"],
+                                ["照片/录像", VideoConfig.host + ":37261", "HTTP，代理到相机 :82"],
+                                ["点云流", "127.0.0.1:37262", "SSH 隧道 → 机载 37262，AGM1 协议"],
+                                ["建图启动", "127.0.0.1:37263", "SSH 隧道 → 机载 37263，HTTP /ensure"],
+                                ["遥测网关", "127.0.0.1:8765", "SSH 隧道 → 机载 8765，逐行 JSON"]
+                            ]
+                            delegate: Row {
+                                width: parent.width; height: 24
+                                Text { width: 90; height: 24; text: modelData[0]; color: "#cbdbea"; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
+                                Text { width: 186; height: 24; text: modelData[1]; color: "#8fa6ba"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                                Text { width: parent.width - 276; height: 24; text: modelData[2]; color: "#7f97ab"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                            }
                         }
-                        Row {
-                            width: parent.width; height: 31
-                            FormLabel { width: 77; text: "端口" }
-                            ValueField { width: 107; text: page.values.rtkPort; onTextEdited: page.setValue("rtkPort", text) }
-                            FormLabel { width: 77; text: "账号"; horizontalAlignment: Text.AlignHCenter }
-                            ValueField { width: parent.width - 261; text: page.values.rtkAccount; onTextEdited: page.setValue("rtkAccount", text) }
-                        }
-                        Row {
-                            width: parent.width; height: 31
-                            FormLabel { width: 77; text: "差分格式" }
-                            ChoiceField { width: 107; model: ["RTCM 3.2", "RTCM 3.0"] }
-                            FormLabel { width: 77; text: "密码"; horizontalAlignment: Text.AlignHCenter }
-                            ValueField { width: parent.width - 261; text: page.rtkPassword; echoMode: TextInput.Password; onTextEdited: page.rtkPassword = text }
-                        }
-                        Row {
-                            width: parent.width; height: 33
-                            FormLabel { width: 77; text: "挂载点" }
-                            ValueField { width: parent.width - 192; text: page.values.rtkMount; onTextEdited: page.setValue("rtkMount", text) }
-                            Item { width: 13; height: 1 }
-                            GButton { width: 102; height: 33; text: "测试连接"; fill: "#087dff"; onClicked: page.notify("演示模式：尚未接入RTK服务，未执行连接测试") }
+                        Text {
+                            width: parent.width
+                            text: "前三个走 Wi-Fi 直连机载电脑，后三个走 SSH 隧道（隧道目标随上面的地址与用户自动切换）。机巢与 RTK 仍是演示，未接入真实设备。"
+                            color: "#6d8496"; font.pixelSize: 11; wrapMode: Text.WordWrap
                         }
                     }
                 }
+
+                Row {
+                    id: lowerRow
+                    width: parent.width; height: 278; spacing: 8
+                    property real rtkWidth: Math.round((width - spacing) * 0.535)
+                    GCard {
+                        width: lowerRow.rtkWidth; height: parent.height; title: "RTK设置"
+                        Column {
+                            x: 13; y: 8; width: parent.width - 26; spacing: 5
+                            SwitchRow { configuration: page.values; onEdited: page.setValue(key, value); label: "启用RTK"; labelWidth: 78; configKey: "rtkEnabled"; height: 30 }
+                            Row {
+                                width: parent.width; height: 31
+                                FormLabel { width: 77; text: "连接方式" }
+                                ChoiceField { width: 107; model: ["网络RTK", "串口RTK"] }
+                                FormLabel { width: 77; text: "基站地址"; horizontalAlignment: Text.AlignHCenter }
+                                ValueField { width: parent.width - 261; text: page.values.rtkHost; font.pixelSize: 11; leftPadding: 5; rightPadding: 3; onTextEdited: page.setValue("rtkHost", text) }
+                            }
+                            Row {
+                                width: parent.width; height: 31
+                                FormLabel { width: 77; text: "端口" }
+                                ValueField { width: 107; text: page.values.rtkPort; onTextEdited: page.setValue("rtkPort", text) }
+                                FormLabel { width: 77; text: "账号"; horizontalAlignment: Text.AlignHCenter }
+                                ValueField { width: parent.width - 261; text: page.values.rtkAccount; onTextEdited: page.setValue("rtkAccount", text) }
+                            }
+                            Row {
+                                width: parent.width; height: 31
+                                FormLabel { width: 77; text: "差分格式" }
+                                ChoiceField { width: 107; model: ["RTCM 3.2", "RTCM 3.0"] }
+                                FormLabel { width: 77; text: "密码"; horizontalAlignment: Text.AlignHCenter }
+                                ValueField { width: parent.width - 261; text: page.rtkPassword; echoMode: TextInput.Password; onTextEdited: page.rtkPassword = text }
+                            }
+                            Row {
+                                width: parent.width; height: 33
+                                FormLabel { width: 77; text: "挂载点" }
+                                ValueField { width: parent.width - 192; text: page.values.rtkMount; onTextEdited: page.setValue("rtkMount", text) }
+                                Item { width: 13; height: 1 }
+                                GButton { width: 102; height: 33; text: "测试连接"; fill: "#087dff"; onClicked: page.notify("演示模式：尚未接入RTK服务，未执行连接测试") }
+                            }
+                        }
+                    }
+                    GCard {
+                        width: parent.width - lowerRow.rtkWidth - lowerRow.spacing; height: parent.height; title: "时间与时区"
+                        Column {
+                            x: 14; y: 9; width: parent.width - 28; spacing: 9
+                            Row {
+                                width: parent.width; height: 31
+                                FormLabel { width: 82; text: "设备时间" }
+                                ValueField { width: parent.width - 219; text: page.values.deviceTime; onTextEdited: page.setValue("deviceTime", text) }
+                                Item { width: 16; height: 1 }
+                                GButton { width: 121; height: 31; text: "同步本机时间"; onClicked: { page.setValue("deviceTime", Qt.formatDateTime(new Date(), "yyyy-MM-dd HH:mm:ss")); page.notify("本机时间已填入界面；未修改设备或操作系统时钟") } }
+                            }
+                            Row { width: parent.width; height: 31; FormLabel { width: 82; text: "时区" } ChoiceField { width: parent.width - 82; model: ["(UTC+08:00) 北京、重庆、香港、乌鲁木齐", "(UTC+00:00) 协调世界时"] } }
+                            Row { width: parent.width; height: 30; StatusDot { width: 166; anchors.verticalCenter: parent.verticalCenter; text: "自动校时（NTP）"; textColor: "#cbdbea" } Toggle { anchors.verticalCenter: parent.verticalCenter; checked: page.values.ntpEnabled; onToggled: page.setValue("ntpEnabled", checked) } }
+                            Row { width: parent.width; height: 31; FormLabel { width: 82; text: "NTP服务器" } ValueField { width: 265; text: page.values.ntpServer; onTextEdited: page.setValue("ntpServer", text) } }
+                        }
+                    }
+                }
+                Row {
+                    width: parent.width; height: 240; spacing: 8
+                    GCard {
+                        width: parent.width; height: parent.height; title: "其他设置"
+                        Column {
+                            x: 20; y: 8; width: parent.width - 40; spacing: 4
+                            SwitchRow { configuration: page.values; onEdited: page.setValue(key, value); label: "开机自启动"; labelWidth: 113; configKey: "autoStart" }
+                            SwitchRow { configuration: page.values; onEdited: page.setValue(key, value); label: "异常自动重连"; labelWidth: 113; configKey: "autoReconnect" }
+                            SwitchRow { configuration: page.values; onEdited: page.setValue(key, value); label: "连接失败告警"; labelWidth: 113; configKey: "connectionAlarm" }
+                            Row { width: parent.width; height: 31; FormLabel { width: 113; text: "重连间隔（秒）" } ValueField { width: 102; text: page.values.reconnectInterval; validator: IntValidator { bottom: 1; top: 3600 } onTextEdited: page.setValue("reconnectInterval", text) } }
+                            GButton { anchors.right: parent.right; width: 100; height: 35; text: "保存设置"; fill: "#087dff"; onClicked: page.save() }
+                        }
+                    }
+                }
+
             }
-            Row {
-                // 原来是 height: parent.height - 706（"填满剩余高度"），
-                // 该写法依赖父容器有固定高度，内容一超出就被裁掉且无法查看。
-                // 改成固定高度，超出部分由外层 Flickable 滚动查看。
-                width: parent.width; height: 240; spacing: 8
-                GCard {
-                    width: 486; height: parent.height; title: "时间与时区"
-                    Column {
-                        x: 14; y: 9; width: parent.width - 28; spacing: 9
-                        Row {
-                            width: parent.width; height: 31
-                            FormLabel { width: 82; text: "设备时间" }
-                            ValueField { width: parent.width - 219; text: page.values.deviceTime; onTextEdited: page.setValue("deviceTime", text) }
-                            Item { width: 16; height: 1 }
-                            GButton { width: 121; height: 31; text: "同步本机时间"; onClicked: { page.setValue("deviceTime", Qt.formatDateTime(new Date(), "yyyy-MM-dd HH:mm:ss")); page.notify("本机时间已填入界面；未修改设备或操作系统时钟") } }
-                        }
-                        Row { width: parent.width; height: 31; FormLabel { width: 82; text: "时区" } ChoiceField { width: parent.width - 82; model: ["(UTC+08:00) 北京、重庆、香港、乌鲁木齐", "(UTC+00:00) 协调世界时"] } }
-                        Row { width: parent.width; height: 30; StatusDot { width: 166; anchors.verticalCenter: parent.verticalCenter; text: "自动校时（NTP）"; textColor: "#cbdbea" } Toggle { anchors.verticalCenter: parent.verticalCenter; checked: page.values.ntpEnabled; onToggled: page.setValue("ntpEnabled", checked) } }
-                        Row { width: parent.width; height: 31; FormLabel { width: 82; text: "NTP服务器" } ValueField { width: 265; text: page.values.ntpServer; onTextEdited: page.setValue("ntpServer", text) } }
-                    }
-                }
-                GCard {
-                    width: parent.width - 494; height: parent.height; title: "其他设置"
-                    Column {
-                        x: 20; y: 8; width: parent.width - 40; spacing: 4
-                        SwitchRow { configuration: page.values; onEdited: page.setValue(key, value); label: "开机自启动"; labelWidth: 113; configKey: "autoStart" }
-                        SwitchRow { configuration: page.values; onEdited: page.setValue(key, value); label: "异常自动重连"; labelWidth: 113; configKey: "autoReconnect" }
-                        SwitchRow { configuration: page.values; onEdited: page.setValue(key, value); label: "连接失败告警"; labelWidth: 113; configKey: "connectionAlarm" }
-                        Row { width: parent.width; height: 31; FormLabel { width: 113; text: "重连间隔（秒）" } ValueField { width: 102; text: page.values.reconnectInterval; validator: IntValidator { bottom: 1; top: 3600 } onTextEdited: page.setValue("reconnectInterval", text) } }
-                        GButton { anchors.right: parent.right; width: 100; height: 35; text: "保存设置"; fill: "#087dff"; onClicked: page.save() }
-                    }
-                }
-            }
-        }
         }
     }
 
