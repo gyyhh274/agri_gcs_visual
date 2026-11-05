@@ -117,7 +117,8 @@ void GroundLink::finishCommand(bool accepted, const QString &reason, const QVari
 QString GroundLink::sendCommand(const QString &operation, const QString &session, const QString &mission,
                                int revision, const QVariantList &waypoints, const QVariantMap &automatic) {
     if (!m_connected || m_protocol != 2 || busy()
-        || (operation != "upload" && operation != "start" && operation != "get_status" && operation != "cancel")) return {};
+        || (operation != "upload" && operation != "start" && operation != "get_status"
+            && operation != "cancel" && operation != "clear")) return {};
     if (operation != "get_status" && session != m_mission.value("map_session_id").toString()) return {};
     if ((operation == "start" || operation == "cancel")
         && (mission.isEmpty() || mission != m_mission.value("mission_id").toString()

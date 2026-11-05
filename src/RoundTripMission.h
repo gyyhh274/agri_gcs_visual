@@ -17,14 +17,17 @@ class RoundTripMission : public QObject {
     Q_PROPERTY(bool canEdit READ canEdit NOTIFY changed)
     Q_PROPERTY(bool active READ active NOTIFY changed)
     Q_PROPERTY(bool canCancel READ canCancel NOTIFY changed)
+    Q_PROPERTY(bool canClear READ canClear NOTIFY changed)
     Q_PROPERTY(double height READ height NOTIFY changed)
     Q_PROPERTY(QVector3D home READ home NOTIFY changed)
     Q_PROPERTY(QVector3D groundOrigin READ groundOrigin NOTIFY changed)
     Q_PROPERTY(QVector3D target READ target NOTIFY changed)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY changed)
+    Q_PROPERTY(QVariantList flightBounds READ flightBounds NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY changed)
     Q_PROPERTY(QString phase READ phase NOTIFY changed)
     Q_PROPERTY(QString readiness READ readiness NOTIFY changed)
+    Q_PROPERTY(QString recordHint READ recordHint NOTIFY changed)
 public:
     RoundTripMission(GroundLink *link, MappingClient *mapping, int mappingPort = 37262, QObject *parent = nullptr);
     bool contextReady() const;
@@ -36,21 +39,25 @@ public:
     bool canEdit() const;
     bool active() const;
     bool canCancel() const;
+    bool canClear() const;
     double height() const { return m_height; }
     QVector3D home() const { return m_home; }
     QVector3D groundOrigin() const { return m_groundOrigin; }
     QVector3D target() const { return m_target; }
     QVariantList markers() const;
+    QVariantList flightBounds() const { return m_fence; }
     QString status() const { return m_status; }
     QString phase() const;
     QString readiness() const;
+    QString recordHint() const;
     void enableLocalLink();
     Q_INVOKABLE void recordHome();
-    Q_INVOKABLE void setTarget(double x, double y);
+    Q_INVOKABLE bool setTarget(double x, double y);
     Q_INVOKABLE void setHeight(double z);
     Q_INVOKABLE void upload(double hoverSeconds);
     Q_INVOKABLE void start();
     Q_INVOKABLE void cancel();
+    Q_INVOKABLE void clearMission();
 signals:
     void changed();
 private:

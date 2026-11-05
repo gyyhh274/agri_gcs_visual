@@ -4,6 +4,7 @@ import QtQuick.Controls 2.15
 Rectangle {
     id: control
     property var mission
+    property bool selectingTarget: false
     signal selectTarget()
     color: "#ee0a2234"; border.color: "#28617b"; radius: 6
     clip: true
@@ -17,6 +18,13 @@ Rectangle {
             Text { width: parent.width; text: control.mission.phase; color: "#82e8d1"; font.pixelSize: 13; wrapMode: Text.WordWrap }
             Text { width: parent.width; text: control.mission.readiness; color: control.mission.canRecord ? "#6fd9b9" : "#e8bb76"; font.pixelSize: 12; wrapMode: Text.WordWrap }
             GButton { width: parent.width; height: 34; text: "① 确认当前位置为起降点"; enabled: control.mission.canRecord; onClicked: control.mission.recordHome() }
+            Text {
+                width: parent.width
+                visible: !control.mission.canRecord && !control.mission.homeValid
+                         && control.mission.recordHint.length > 0
+                text: "未能标点：" + control.mission.recordHint
+                color: "#e8bb76"; font.pixelSize: 11; wrapMode: Text.WordWrap
+            }
             Text { width: parent.width; text: control.mission.homeValid ? "起降点: " + control.mission.groundOrigin.x.toFixed(2) + ", " + control.mission.groundOrigin.y.toFixed(2) + ", " + control.mission.groundOrigin.z.toFixed(2) + " m\n自动起飞上升 " + (control.mission.home.z-control.mission.groundOrigin.z).toFixed(2) + " m，返航高度 Z=" + control.mission.home.z.toFixed(2) : "在地面保持静止、飞控未解锁，确认本次起降位置。"; color: "#b7cedb"; font.pixelSize: 12; wrapMode: Text.WordWrap }
             Row {
                 spacing: 8
@@ -24,7 +32,7 @@ Rectangle {
                 TextField { id: heightField; width: 88; height: 32; text: control.mission.height.toFixed(2); color: "#dce9f7"; font.pixelSize: 13; background: Rectangle { color: "#061522"; radius: 4; border.color: "#16405e" } enabled: control.mission.homeValid && control.mission.canEdit; onEditingFinished: control.mission.setHeight(Number(text)) }
                 Text { text: "m · world"; color: "#9dbac8"; anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 11 }
             }
-            GButton { width: parent.width; height: 34; text: "② 俯视图选择目标 P"; enabled: control.mission.homeValid && control.mission.contextReady && control.mission.canEdit; onClicked: control.selectTarget() }
+            GButton { objectName: "roundTripPickTargetButton"; width: parent.width; height: 34; text: control.selectingTarget ? "② 选点中，点击地图范围内" : "② 俯视图选择目标 P"; checked: control.selectingTarget; enabled: control.mission.homeValid && control.mission.contextReady && control.mission.canEdit; onClicked: control.selectTarget() }
             Row {
                 width: parent.width; spacing: 6
                 TextField { id: targetXField; width: (parent.width-92)/2; height: 32; placeholderText: "目标 X"; color: "#dce9f7"; font.pixelSize: 12; selectByMouse: true; enabled: control.mission.homeValid && control.mission.canEdit; background: Rectangle { color: "#061522"; radius: 4; border.color: "#16405e" } }
@@ -44,7 +52,7 @@ Rectangle {
             Row {
                 spacing: 8
                 GButton { width: 124; height: 32; text: "查询任务状态"; enabled: groundLink.connected && !groundLink.busy; onClicked: groundLink.queryMission() }
-                GButton { width: 124; height: 32; text: "终止任务…"; fill: "#804637"; enabled: control.mission.canCancel; onClicked: cancelDialog.open() }
+                GButton { width: 124; height: 32; text: "终止任务…"; fill: "#804637"; enabled: control.mission.canClear; onClicked: cancelDialog.open() }
             }
             Text { width: parent.width; text: control.mission.status; color: "#ecce9a"; font.pixelSize: 12; wrapMode: Text.WordWrap }
         }
@@ -79,11 +87,11 @@ Rectangle {
         background: Rectangle { color: "#0a2234"; border.color: "#28617b"; radius: 6 }
         contentItem: Column {
             spacing: 18
-            Text { text: "终止当前任务"; color: "white"; font.pixelSize: 18 }
-            Text { width: parent.width; text: "停止自动任务及起降流程，不继续返程或自动降落。请观察机体并准备遥控器接管。终止后不能直接恢复本次任务。"; color: "#cfe0ef"; wrapMode: Text.WordWrap; font.pixelSize: 13 }
+            Text { text: "清理机载任务"; color: "white"; font.pixelSize: 18 }
+            Text { width: parent.width; text: "清理机载电脑上已有的任务（含上次失败的任务）并解除失效闩锁，之后可重新记录起降点并上传。\n仅在地面、飞控未解锁时可用；飞行中该按钮不可点击，请用遥控器接管。"; color: "#cfe0ef"; wrapMode: Text.WordWrap; font.pixelSize: 13 }
             Row {
                 spacing: 12
-                GButton { width: 140; height: 35; text: "确认终止"; enabled: control.mission.canCancel; onClicked: { control.mission.cancel(); cancelDialog.close() } }
+                GButton { width: 140; height: 35; text: "确认清理"; enabled: control.mission.canClear; onClicked: { control.mission.clearMission(); cancelDialog.close() } }
                 GButton { width: 100; height: 35; text: "保留任务"; onClicked: cancelDialog.close() }
             }
         }

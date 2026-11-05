@@ -18,9 +18,11 @@ RoundTripMission::RoundTripMission(GroundLink *link, MappingClient *mapping, int
                 && mission.value("map_session_id").toString() == m_taskSession && mission.value("revision").toInt() == 1
                 && mission.value("total").toInt() == 2 && mission.value("state").toString() == "READY"
                 && mission.value("automatic").toBool();
+        if (m_pendingOperation == "clear" && accepted) m_uploaded = false;
         m_status = accepted ? (m_pendingOperation == "upload"
             ? QStringLiteral("自动任务已上传；确认起降区域空旷后点击开始")
             : m_pendingOperation == "cancel" ? QStringLiteral("终止请求已接受，请检查悬停并人工接管")
+            : m_pendingOperation == "clear" ? QStringLiteral("机载任务已清理，可重新记录起降点并上传")
             : QStringLiteral("开始请求已接受，等待机载执行状态")) : QStringLiteral("请求未确认：%1").arg(reason);
         m_pendingId.clear(); m_pendingOperation.clear();
         emit changed();
@@ -62,13 +64,45 @@ bool RoundTripMission::contextReady() const {
         && m_mapping->hasPose() && m_mapping->frameId() == "world" && !m_mapping->sessionId().isEmpty()
         && m_mapping->host() == "127.0.0.1" && m_mapping->port() == m_mappingPort
         && std::abs(m_mapping->poseStamp()-m_link->mapOdomStamp()) <= .5
-        && now-m_mapping->poseStamp() < .8 && now-m_mapping->poseStamp() >= -.1;
+        // 点云桥实测位姿刷新约 0.6 s 一次、偶有 1 s 空洞，窗口取 1.5 s 与之匹配；
+        // 这里只用于地面标点的"LIVE 地图"判据，不参与飞行决策。
+        && now-m_mapping->poseStamp() < 1.5 && now-m_mapping->poseStamp() >= -.1;
 }
 bool RoundTripMission::active() const {
     const QString state = m_link->mission().value("state").toString();
     return state == "TAKING_OFF" || state == "FLYING" || state == "HOVERING" || state == "LANDING";
 }
 bool RoundTripMission::canEdit() const { return !active() && !m_link->busy() && m_link->mission().value("state") != "FAILED"; }
+QString RoundTripMission::recordHint() const {
+    // 逐项说明"① 确认起降点"为什么点不了，避免只给一句笼统提示。
+    if (!m_link->connected()) return QStringLiteral("未连接任务网关");
+    if (!m_link->mission().value("automatic_supported").toBool())
+        return QStringLiteral("机载未启用自动往返配置");
+    if (!contextReady()) return QStringLiteral("LIVE 地图/围栏/定位上下文未就绪");
+    if (!canEdit()) {
+        if (m_link->busy()) return QStringLiteral("机载正忙（等上一请求返回）");
+        if (m_link->mission().value("state") == "FAILED") return QStringLiteral("机载任务处于 FAILED，请先清理任务");
+        return QStringLiteral("任务执行中");
+    }
+    if (!m_link->mission().value("takeoff_ready").toBool())
+        return QStringLiteral("机载地面起飞前检查未通过");
+    if (m_link->armed()) return QStringLiteral("飞控已解锁");
+    if (m_hoverSamples.size() < 8)
+        return QStringLiteral("静止采样中 %1/8（需连续 2 秒）").arg(m_hoverSamples.size());
+    for (const auto &p : m_hoverSamples)
+        if ((p - m_hoverSamples.last()).length() > .1f)
+            return QStringLiteral("位置仍在变化（超过 0.1 m）");
+    const auto ground = m_hoverSamples.last();
+    const auto b = m_link->flightBounds();
+    for (int i = 0; i < 3; ++i)
+        if (ground[i] <= b[i].toDouble() || ground[i] >= b[i+3].toDouble())
+            return QStringLiteral("起降点在地图围栏外");
+    const double height = m_link->mission().value("takeoff_height").toDouble();
+    if (!(height > .1)) return QStringLiteral("起飞高度未知（%1 m）").arg(height);
+    if (!inside(ground + QVector3D(0, 0, height)))
+        return QStringLiteral("起飞上升后的位置在围栏外");
+    return QString();
+}
 bool RoundTripMission::canRecord() const {
     if (!contextReady() || !canEdit() || !m_link->mission().value("takeoff_ready").toBool() || m_link->armed()
         || m_hoverSamples.size() < 8) return false;
@@ -108,6 +142,25 @@ bool RoundTripMission::canCancel() const {
         && (task.value("state") == "READY" || task.value("state") == "TAKING_OFF" || task.value("state") == "LANDING"
             || task.value("state") == "FLYING" || task.value("state") == "HOVERING");
 }
+bool RoundTripMission::canClear() const {
+    if (!m_link->connected() || m_link->protocolVersion() != 2 || m_link->busy()) return false;
+    const auto task = m_link->mission();
+    const QString state = task.value("state").toString();
+    // 安全限制：飞行中（含起飞/降落）一律不允许清理。
+    if (m_link->armed() || state == "TAKING_OFF" || state == "FLYING"
+        || state == "HOVERING" || state == "LANDING") return false;
+    if (task.value("map_session_id").toString().isEmpty()) return false;
+    // 地面上有可清理的东西：READY / COMPLETED / FAILED，或机载仍持有任务 ID。
+    return state == "READY" || state == "COMPLETED" || state == "FAILED"
+        || !task.value("mission_id").toString().isEmpty();
+}
+void RoundTripMission::clearMission() {
+    if (!canClear()) return;
+    m_pendingOperation = "clear";
+    const auto task = m_link->mission();
+    m_pendingId = m_link->sendCommand("clear", task.value("map_session_id").toString(), QString(), 0);
+    m_status = QStringLiteral("清理请求已发送；仅在地面且飞控未解锁时生效"); emit changed();
+}
 void RoundTripMission::update() {
     if (m_homeValid && (!m_link->connected() || m_mapping->demo()
         || m_mapping->sessionId() != m_mapSession || m_link->mission().value("map_session_id") != m_taskSession
@@ -137,13 +190,21 @@ void RoundTripMission::setHeight(double z) {
     m_uploaded = false;
     emit changed();
 }
-void RoundTripMission::setTarget(double x, double y) {
-    if (!contextReady() || !canEdit() || !m_homeValid || !std::isfinite(x) || !std::isfinite(y)) return;
+bool RoundTripMission::setTarget(double x, double y) {
+    const auto reject = [this](const QString &reason) {
+        m_status = reason; emit changed(); return false;
+    };
+    if (!contextReady()) return reject(QStringLiteral("LIVE 地图或定位暂未就绪；恢复后可继续点击选点"));
+    if (!canEdit()) return reject(QStringLiteral("当前任务状态或未结束的请求不允许修改目标"));
+    if (!m_homeValid) return reject(QStringLiteral("请先确认本次当前位置为起降点，再选择目标"));
+    if (!std::isfinite(x) || !std::isfinite(y)) return reject(QStringLiteral("目标坐标无效，请重新点击地图"));
     const QVector3D next(x,y,m_height);
-    if (!inside(next)) { m_status = QStringLiteral("目标超出机载确认的飞行范围或高度限制"); emit changed(); return; }
+    if (!inside(next)) return reject(QStringLiteral("目标 (%1, %2, Z=%3) 超出机载确认的飞行范围或高度限制；请在绿色范围内选点并核对目标高度")
+        .arg(x,0,'f',2).arg(y,0,'f',2).arg(m_height,0,'f',2));
     m_target = next; m_hasTarget = true; m_uploaded = false;
     m_status = QStringLiteral("目标已选择，上传时由机载检查障碍物和已知空间");
     emit changed();
+    return true;
 }
 void RoundTripMission::upload(double hover) {
     if (!canUpload() || !std::isfinite(hover) || hover < 0 || hover > 60) return;

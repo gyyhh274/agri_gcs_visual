@@ -5,6 +5,11 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QtEndian>
+#include <QQmlComponent>
+#include <QQmlContext>
+#include <QQmlEngine>
+#include <QQuickWindow>
+#include <QQuickItemGrabResult>
 #include <cstring>
 #include <cmath>
 #include "GroundLink.h"
@@ -22,6 +27,30 @@ static QByteArray mapFrame(QJsonObject header, QByteArray payload = {}) {
 class RoundTripTest : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase() {
+        qmlRegisterType<PointCloudView>("Agri.Map", 1, 0, "PointCloudView");
+        qmlRegisterUncreatableType<MappingClient>("Agri.Map", 1, 0, "MappingClient", QStringLiteral("Provided by the application"));
+    }
+    void selectionViewFitsFenceBesideTaskDock() {
+        PointCloudView view;
+        view.setWidth(1000); view.setHeight(600);
+        const QVariantList bounds{-.5,-.5,-.1,.5,.5,.7};
+        for (double yaw : {-135.,-45.,0.,90.}) {
+            view.setYaw(yaw);
+            QVERIFY(view.focusFlightRegion(bounds,.5,304));
+            QVERIFY(view.topDown()); QVERIFY(!view.follow());
+            QVERIFY(view.distance() < 3.);
+            for (double x : {-.5,.5}) for (double y : {-.5,.5}) {
+                const auto screen = view.projectPoint(x,y,.5);
+                QVERIFY(screen.x() > 0 && screen.x() < 696);
+                QVERIFY(screen.y() > 0 && screen.y() < 600);
+                const auto world = view.worldAt(screen.x(),screen.y(),.5);
+                QVERIFY(world.value("valid").toBool());
+                QVERIFY(std::abs(world.value("x").toDouble()-x) < .0001);
+                QVERIFY(std::abs(world.value("y").toDouble()-y) < .0001);
+            }
+        }
+    }
     void pickProjectionMatchesEveryCameraAngle() {
         PointCloudView view; view.setWidth(800); view.setHeight(600); view.setTopDown(true);
         for (double angle : {-135.,-45.,0.,90.}) {
@@ -88,7 +117,82 @@ private slots:
         ticker.start(50);
         QTRY_VERIFY_WITH_TIMEOUT(mission.canRecord(),4000);
         QVERIFY(commands.isEmpty()); QVERIFY(!mission.canStart());
-        mission.recordHome(); mission.setTarget(1.1,.3);
+        mission.recordHome();
+        {
+            // Exercise the actual QML click handler with isolated map/task peers.
+            // A rejected click must not consume selection or send a task command.
+            QQmlEngine engine;
+            engine.rootContext()->setContextProperty("mappingClient", &map);
+            engine.rootContext()->setContextProperty("roundTripMission", &mission);
+            engine.rootContext()->setContextProperty("groundLink", &link);
+            QQuickWindow window;
+            window.resize(1000,700);
+            QQmlComponent component(&engine, QUrl("qrc:/qml/components/RealtimeMapPanel.qml"));
+            QScopedPointer<QObject> root(component.create());
+            QVERIFY2(root, qPrintable(component.errorString()));
+            auto *panel = qobject_cast<QQuickItem *>(root.data());
+            QVERIFY(panel);
+            panel->setProperty("initialViewFitted", true);
+            panel->setParentItem(window.contentItem());
+            panel->setSize(window.size());
+            window.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&window));
+            auto *cloud = panel->findChild<PointCloudView *>("pointCloudView");
+            QVERIFY(cloud);
+            QObject *pickButton = nullptr;
+            for (auto *object : panel->findChildren<QObject *>()) {
+                if (object->property("text").toString().contains(QStringLiteral("俯视图选择目标"))) {
+                    pickButton = object; break;
+                }
+            }
+            QVERIFY(pickButton);
+            QVERIFY(QMetaObject::invokeMethod(pickButton,"clicked"));
+            QVERIFY(panel->property("selectingTarget").toBool());
+            QVERIFY(cloud->topDown());
+            QCoreApplication::processEvents();
+            auto clickWorld = [&](double x, double y) {
+                const QPointF screen = cloud->mapToScene(cloud->projectPoint(x,y,mission.height()));
+                QVERIFY(screen.x() > 0 && screen.x() < window.width());
+                QVERIFY(screen.y() > 48 && screen.y() < window.height()-43);
+                QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, screen.toPoint());
+            };
+            clickWorld(-2.2,0.);
+            QTRY_VERIFY(panel->property("selectingTarget").toBool());
+            QVERIFY(!mission.hasTarget());
+            QVERIFY(mission.status().contains(QStringLiteral("范围")));
+            QVERIFY(commands.isEmpty());
+            aligned = false; QTRY_VERIFY(!mission.contextReady());
+            clickWorld(1.1,.3);
+            QVERIFY(!mission.hasTarget());
+            QVERIFY(panel->property("selectingTarget").toBool());
+            QVERIFY(mission.status().contains(QStringLiteral("暂未就绪")));
+            aligned = true; QTRY_VERIFY(mission.contextReady());
+            clickWorld(1.1,.3);
+            QTRY_VERIFY(mission.hasTarget());
+            QVERIFY(!panel->property("selectingTarget").toBool());
+            QVERIFY(std::abs(mission.target().x()-1.1) < .03);
+            QVERIFY(std::abs(mission.target().y()-.3) < .03);
+            QVERIFY(commands.isEmpty());
+            QList<QQuickItem *> pending{panel};
+            QQuickItem *marker = nullptr;
+            while (!pending.isEmpty()) {
+                auto *item = pending.takeLast();
+                if (item->objectName() == "roundTripMarker1") { marker = item; break; }
+                pending.append(item->childItems());
+            }
+            QVERIFY(marker && marker->isVisible());
+            const auto expected = cloud->mapToScene(cloud->projectPoint(mission.target().x(),mission.target().y(),mission.target().z()));
+            const auto actual = marker->mapToScene(QPointF(marker->width()/2,marker->height()/2));
+            QVERIFY(QLineF(actual,expected).length() < 1.);
+            const QString preview = qEnvironmentVariable("AGRI_GCS_PICK_PREVIEW");
+            if (!preview.isEmpty()) {
+                auto grab = window.contentItem()->grabToImage(); QVERIFY(grab);
+                QSignalSpy ready(grab.data(), &QQuickItemGrabResult::ready);
+                QVERIFY(ready.wait(5000));
+                QVERIFY(grab->image().save(preview));
+            }
+        }
+        mission.setTarget(1.1,.3);
         QVERIFY(mission.canUpload()); mission.upload(2);
         QTRY_COMPARE(commands.size(),1);
         const auto points = commands[0].value("waypoints").toArray();
