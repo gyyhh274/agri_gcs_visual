@@ -52,7 +52,7 @@ Rectangle {
             Row {
                 spacing: 8
                 GButton { width: 124; height: 32; text: "查询任务状态"; enabled: groundLink.connected && !groundLink.busy; onClicked: groundLink.queryMission() }
-                GButton { width: 124; height: 32; text: "终止任务…"; fill: "#804637"; enabled: control.mission.canClear; onClicked: cancelDialog.open() }
+                GButton { width: 124; height: 32; text: "任务初始化…"; fill: "#2f6f8f"; enabled: control.mission.canClear; onClicked: cancelDialog.open() }
             }
             Text { width: parent.width; text: control.mission.status; color: "#ecce9a"; font.pixelSize: 12; wrapMode: Text.WordWrap }
         }
@@ -87,11 +87,11 @@ Rectangle {
         background: Rectangle { color: "#0a2234"; border.color: "#28617b"; radius: 6 }
         contentItem: Column {
             spacing: 18
-            Text { text: "清理机载任务"; color: "white"; font.pixelSize: 18 }
+            Text { text: "任务初始化"; color: "white"; font.pixelSize: 18 }
             Text { width: parent.width; text: "清理机载电脑上已有的任务（含上次失败的任务）并解除失效闩锁，之后可重新记录起降点并上传。\n仅在地面、飞控未解锁时可用；飞行中该按钮不可点击，请用遥控器接管。"; color: "#cfe0ef"; wrapMode: Text.WordWrap; font.pixelSize: 13 }
             Row {
                 spacing: 12
-                GButton { width: 140; height: 35; text: "确认清理"; enabled: control.mission.canClear; onClicked: { control.mission.clearMission(); cancelDialog.close() } }
+                GButton { width: 140; height: 35; text: "确认初始化"; enabled: control.mission.canClear; onClicked: { control.mission.clearMission(); cancelDialog.close() } }
                 GButton { width: 100; height: 35; text: "保留任务"; onClicked: cancelDialog.close() }
             }
         }

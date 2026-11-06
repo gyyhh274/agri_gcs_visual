@@ -18,11 +18,21 @@ RoundTripMission::RoundTripMission(GroundLink *link, MappingClient *mapping, int
                 && mission.value("map_session_id").toString() == m_taskSession && mission.value("revision").toInt() == 1
                 && mission.value("total").toInt() == 2 && mission.value("state").toString() == "READY"
                 && mission.value("automatic").toBool();
-        if (m_pendingOperation == "clear" && accepted) m_uploaded = false;
+        if (m_pendingOperation == "clear" && accepted) {
+            // 任务初始化：把地面站侧也恢复成"下一次任务开始前"的状态，
+            // 起降点、目标点、上传标记全部作废，必须重新确认。
+            m_uploaded = false;
+            m_homeValid = false;
+            m_hasTarget = false;
+            m_hoverSamples.clear();
+            m_home = QVector3D();
+            m_target = QVector3D();
+            m_groundOrigin = QVector3D();
+        }
         m_status = accepted ? (m_pendingOperation == "upload"
             ? QStringLiteral("自动任务已上传；确认起降区域空旷后点击开始")
             : m_pendingOperation == "cancel" ? QStringLiteral("终止请求已接受，请检查悬停并人工接管")
-            : m_pendingOperation == "clear" ? QStringLiteral("机载任务已清理，可重新记录起降点并上传")
+            : m_pendingOperation == "clear" ? QStringLiteral("环境已初始化：请重新确认起降点，再选目标并上传")
             : QStringLiteral("开始请求已接受，等待机载执行状态")) : QStringLiteral("请求未确认：%1").arg(reason);
         m_pendingId.clear(); m_pendingOperation.clear();
         emit changed();
@@ -149,10 +159,9 @@ bool RoundTripMission::canClear() const {
     // 安全限制：飞行中（含起飞/降落）一律不允许清理。
     if (m_link->armed() || state == "TAKING_OFF" || state == "FLYING"
         || state == "HOVERING" || state == "LANDING") return false;
-    if (task.value("map_session_id").toString().isEmpty()) return false;
-    // 地面上有可清理的东西：READY / COMPLETED / FAILED，或机载仍持有任务 ID。
-    return state == "READY" || state == "COMPLETED" || state == "FAILED"
-        || !task.value("mission_id").toString().isEmpty();
+    // 初始化是"把环境恢复到可开始下一次任务"的动作，只要在地面、未解锁、
+    // 不在飞行中就应该可用，不再要求机载一定处于 READY/COMPLETED/FAILED。
+    return !task.value("map_session_id").toString().isEmpty();
 }
 void RoundTripMission::clearMission() {
     if (!canClear()) return;
