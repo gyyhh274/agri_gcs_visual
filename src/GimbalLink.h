@@ -51,6 +51,8 @@ class GimbalLink final : public QObject {
     Q_PROPERTY(int yawRate READ yawRate NOTIFY rotateChanged)
     Q_PROPERTY(int pitchRate READ pitchRate NOTIFY rotateChanged)
     Q_PROPERTY(bool rotating READ rotating NOTIFY rotateChanged)
+    Q_PROPERTY(int manualSpeed READ manualSpeed WRITE setManualSpeed NOTIFY manualSpeedChanged)
+    Q_PROPERTY(bool manualControlEnabled READ manualControlEnabled WRITE setManualControlEnabled NOTIFY manualControlEnabledChanged)
     Q_PROPERTY(bool tfCardPresent READ tfCardPresent NOTIFY changed)
     Q_PROPERTY(QString tfCardText READ tfCardText NOTIFY changed)
     Q_PROPERTY(QString lastFeedback READ lastFeedback NOTIFY feedbackChanged)
@@ -78,6 +80,12 @@ public:
     int yawRate() const { return m_lastYawRate; }
     int pitchRate() const { return m_lastPitchRate; }
     bool rotating() const { return m_lastYawRate != 0 || m_lastPitchRate != 0; }
+    int manualSpeed() const { return m_manualSpeed; }
+    void setManualSpeed(int speed);
+    bool manualControlEnabled() const { return m_manualControlEnabled; }
+    // Lock manual controls while the onboard mission owns the camera. Status
+    // polling continues; unlocking never replays a previously queued command.
+    void setManualControlEnabled(bool enabled);
     bool tfCardPresent() const { return m_tfCardPresent; }
     QString tfCardText() const;
     QString lastFeedback() const { return m_lastFeedback; }
@@ -98,7 +106,8 @@ public:
     Q_INVOKABLE void lookDown();                              // 一键朝下 0x0C/09
 
     /* 拨杆速度控制（SDK 0x07 云台转向）。
-     * 杆量 -100~100 直接对应转向速度：向右为正 yaw、向上为正 pitch。
+     * 杆量 -100~100 按 manualSpeed（1~100，默认 30）等比缩放为 SDK 转速档位。
+     * 这是无量纲速度档位，不是 °/s；向右为正 yaw、向上为正 pitch。
      * 松手必须发 (0,0) 停止；若不发，相机会保持上一次速度。 */
     Q_INVOKABLE void setRotateRate(int yawRate, int pitchRate);
     Q_INVOKABLE void stopRotate();
@@ -119,6 +128,8 @@ signals:
     void changed();
     void attitudeChanged();
     void rotateChanged();
+    void manualSpeedChanged();
+    void manualControlEnabledChanged();
     void feedbackChanged();
     void notified(const QString &text);
     /* 相机功能反馈（SDK 0x0B）。
@@ -173,6 +184,10 @@ private:
     QTimer m_rotateTimer;
 
     // 拨杆状态
+    int m_manualSpeed{30};
+    bool m_manualControlEnabled{true};
+    int m_inputYawRate{0};       // 未缩放杆量；重发、调整速度不能再次缩放输出值
+    int m_inputPitchRate{0};
     int m_lastYawRate{0};
     int m_lastPitchRate{0};
     int m_pendingYawRate{0};

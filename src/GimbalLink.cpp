@@ -26,6 +26,12 @@ constexpr quint8 kCmdCurrentZoom = 0x18;
 constexpr quint8 kCmdGimbalMode = 0x19;
 constexpr quint8 kCmdSoftReboot = 0x80;
 
+bool isReadOnlyCommand(quint8 command)
+{
+    return command == kCmdSystemInfo || command == kCmdGetAttitude ||
+           command == kCmdMaxZoom || command == kCmdCurrentZoom || command == kCmdGimbalMode;
+}
+
 // 0x0C 的功能码
 constexpr quint8 kFuncPhoto = 0x00;
 constexpr quint8 kFuncRecord = 0x02;
@@ -238,6 +244,8 @@ void GimbalLink::disconnectFromGimbal()
     m_attitudeFlushTimer.stop();
     m_targetDirty = false;
     // 断连前先把拨杆速度归零，避免云台继续转动
+    m_inputYawRate = 0;
+    m_inputPitchRate = 0;
     m_pendingYawRate = 0;
     m_pendingPitchRate = 0;
     m_rotateDirty = false;
@@ -258,6 +266,12 @@ void GimbalLink::resetState()
 
 void GimbalLink::sendCommand(quint8 command, const QByteArray &payload, bool expectAck)
 {
+    // Also guard the send boundary so an old queued callback/retry cannot move
+    // the camera after the onboard mission has taken ownership. The one allowed
+    // actuator frame is our zero-speed handoff stop.
+    if (!m_manualControlEnabled && !isReadOnlyCommand(command) &&
+            !(command == kCmdRotate && payload == QByteArray(2, '\0')))
+        return;
     if (m_endpoint.isEmpty()) {
         setStatus(QStringLiteral("未设置云台地址"));
         return;
@@ -485,10 +499,62 @@ void GimbalLink::retryPending()
     }
 }
 
+void GimbalLink::setManualControlEnabled(bool enabled)
+{
+    if (m_manualControlEnabled == enabled)
+        return;
+    m_manualControlEnabled = enabled;
+    if (!enabled) {
+        const bool needsStop = rotating() || m_inputYawRate || m_inputPitchRate ||
+                               m_pendingYawRate || m_pendingPitchRate;
+        m_attitudeFlushTimer.stop();
+        m_targetDirty = false;
+        m_rotateTimer.stop();
+        m_inputYawRate = m_inputPitchRate = 0;
+        m_pendingYawRate = m_pendingPitchRate = 0;
+        m_rotateDirty = needsStop;
+        m_rotateIdle = true;
+        m_lastRotateInputMs = 0;
+        if (needsStop)
+            flushRotate();
+        // Keep read-only queries retryable, but discard every actuator command.
+        for (auto it = m_pending.begin(); it != m_pending.end();) {
+            if (!isReadOnlyCommand(static_cast<quint8>(it.key())))
+                it = m_pending.erase(it);
+            else
+                ++it;
+        }
+    }
+    emit manualControlEnabledChanged();
+    emit changed();
+}
+
+void GimbalLink::setManualSpeed(int speed)
+{
+    const int bounded = std::max(1, std::min(100, speed));
+    if (m_manualSpeed == bounded)
+        return;
+    m_manualSpeed = bounded;
+    // Holding the stick while changing the cap reuses the original input. Do not
+    // refresh its timestamp: changing a setting must not extend the deadman timer.
+    if (!m_rotateIdle) {
+        m_pendingYawRate = static_cast<int>(std::lround(m_inputYawRate * m_manualSpeed / 100.0));
+        m_pendingPitchRate = static_cast<int>(std::lround(m_inputPitchRate * m_manualSpeed / 100.0));
+        m_rotateDirty = true;
+        if (!m_rotateTimer.isActive())
+            m_rotateTimer.start();
+    }
+    emit manualSpeedChanged();
+}
+
 void GimbalLink::setRotateRate(int yawRate, int pitchRate)
 {
-    const int yaw = std::max(-100, std::min(100, yawRate));
-    const int pitch = std::max(-100, std::min(100, pitchRate));
+    if (!m_manualControlEnabled)
+        return;
+    m_inputYawRate = std::max(-100, std::min(100, yawRate));
+    m_inputPitchRate = std::max(-100, std::min(100, pitchRate));
+    const int yaw = static_cast<int>(std::lround(m_inputYawRate * m_manualSpeed / 100.0));
+    const int pitch = static_cast<int>(std::lround(m_inputPitchRate * m_manualSpeed / 100.0));
     m_lastRotateInputMs = nowMs();
     const bool wasIdle = m_rotateIdle;
     m_rotateIdle = false;
@@ -511,6 +577,12 @@ void GimbalLink::setRotateRate(int yawRate, int pitchRate)
 
 void GimbalLink::stopRotate()
 {
+    // Locking already sent its one handoff stop. A delayed QML release must not
+    // send another zero over an onboard action that has since started.
+    if (!m_manualControlEnabled)
+        return;
+    m_inputYawRate = 0;
+    m_inputPitchRate = 0;
     m_pendingYawRate = 0;
     m_pendingPitchRate = 0;
     m_rotateDirty = true;
@@ -594,6 +666,8 @@ void GimbalLink::flushAttitudeTarget()
 
 void GimbalLink::setAttitude(double yaw, double pitch)
 {
+    if (!m_manualControlEnabled)
+        return;
     m_targetYaw = clampValue(yaw, -kYawLimit, kYawLimit);
     m_targetPitch = clampValue(pitch, kPitchMin, kPitchMax);
     m_targetDirty = true;
@@ -603,6 +677,8 @@ void GimbalLink::setAttitude(double yaw, double pitch)
 
 void GimbalLink::jog(double deltaYaw, double deltaPitch)
 {
+    if (!m_manualControlEnabled)
+        return;
     const double baseYaw = m_attitudeFresh ? m_yaw : m_targetYaw;
     const double basePitch = m_attitudeFresh ? m_pitch : m_targetPitch;
     setAttitude(baseYaw + deltaYaw, basePitch + deltaPitch);
@@ -610,6 +686,8 @@ void GimbalLink::jog(double deltaYaw, double deltaPitch)
 
 void GimbalLink::centerGimbal()
 {
+    if (!m_manualControlEnabled)
+        return;
     sendCommand(kCmdCenter, QByteArray(1, static_cast<char>(0x01)), false);
     emit notified(QStringLiteral("已发送云台回中指令"));
     refreshAttitude();
@@ -617,6 +695,8 @@ void GimbalLink::centerGimbal()
 
 void GimbalLink::lookDown()
 {
+    if (!m_manualControlEnabled)
+        return;
     sendCommand(kCmdCameraFunction, QByteArray(1, static_cast<char>(kFuncLookDown)), false);
     emit notified(QStringLiteral("已发送一键朝下指令"));
     refreshAttitude();
@@ -624,6 +704,8 @@ void GimbalLink::lookDown()
 
 void GimbalLink::setMode(int mode)
 {
+    if (!m_manualControlEnabled)
+        return;
     if (mode < 0 || mode > 2) {
         emit notified(QStringLiteral("云台模式无效"));
         return;
@@ -639,6 +721,8 @@ void GimbalLink::setMode(int mode)
 
 void GimbalLink::takePhoto()
 {
+    if (!m_manualControlEnabled)
+        return;
     // SDK: 0x0C 系列无 ACK，成败靠后续状态/照片文件判断，不能等应答
     sendCommand(kCmdCameraFunction, QByteArray(1, static_cast<char>(kFuncPhoto)), false);
     emit notified(QStringLiteral("已发送拍照指令"));
@@ -646,6 +730,8 @@ void GimbalLink::takePhoto()
 
 void GimbalLink::toggleRecording()
 {
+    if (!m_manualControlEnabled)
+        return;
     // 同理：0x0C/02 是切换式且无 ACK，随后主动查一次录像状态确认
     sendCommand(kCmdCameraFunction, QByteArray(1, static_cast<char>(kFuncRecord)), false);
     emit notified(m_recordStatus == 1 ? QStringLiteral("已发送停止录像指令")
@@ -655,6 +741,8 @@ void GimbalLink::toggleRecording()
 
 void GimbalLink::zoomStep(int direction)
 {
+    if (!m_manualControlEnabled)
+        return;
     const char step = direction >= 0 ? static_cast<char>(0x01) : static_cast<char>(0xFF);
     sendCommand(kCmdZoomStep, QByteArray(1, step), false);
     QTimer::singleShot(600, this, [this]() { sendCommand(kCmdCurrentZoom, QByteArray()); });
@@ -662,6 +750,8 @@ void GimbalLink::zoomStep(int direction)
 
 void GimbalLink::setZoomAbsolute(double multiple)
 {
+    if (!m_manualControlEnabled)
+        return;
     const double clamped = clampValue(multiple, 1.0, m_zoomMax);
 
     /* 变倍标定（2026-10-14 实测，勿删）：
@@ -701,6 +791,8 @@ void GimbalLink::refreshAttitude()
 
 void GimbalLink::softReboot()
 {
+    if (!m_manualControlEnabled)
+        return;
     QByteArray payload;
     payload.append(static_cast<char>(0x01)); // 相机重启
     payload.append(static_cast<char>(0x01)); // 云台复位

@@ -82,7 +82,7 @@ Flickable {
         Repeater {
             model: [
                 {key:"flight", label:"飞行栈", detail:"飞控、雷达定位、规划、控制和任务网关；仍需单独触发起飞。"},
-                {key:"gimbal", label:"云台控制", detail:"接收云台动作；启动节点不会自动旋转，也不依赖飞行栈。"},
+                {key:"gimbal", label:"云台控制", detail:"接收航点云台动作；自动转动需在航点中配置，启动节点时不转动。"},
                 {key:"yolo", label:"YOLO 识别", detail:"需要相机视频流和模型；后台不弹识别窗口。"},
                 {key:"auto_record", label:"起飞自动录像", detail:"依赖云台；等待有效飞行状态，原始录像保存到相机卡。"},
                 {key:"save_video", label:"保存识别视频", detail:"依赖 YOLO；带检测框的视频保存在机载电脑。"},

@@ -26,6 +26,13 @@ Item {
     property string pendingUpdateMissionId: ""
     property string pendingUpdateSession: ""
     property int pendingUpdateRevision: 0
+    property string pendingStartRequest: ""
+    property bool pendingGimbalStart: false
+    property bool gimbalOwnershipHeld: false
+    readonly property bool routeUsesGimbal: confirmedRoute && uploadedLocalJson.indexOf('"gimbal"') >= 0
+    readonly property bool automaticGimbalBusy: pendingGimbalStart || gimbalOwnershipHeld || (missionActive &&
+        (groundLink.mission.gimbal_required === true || routeUsesGimbal || ["moving", "settling", "photo_sent"].indexOf(groundLink.mission.action_phase) >= 0))
+    Binding { target: gimbalLink; property: "manualControlEnabled"; value: !page.automaticGimbalBusy }
     readonly property bool missionActive: groundLink.remoteAvailable && ["FLYING", "HOVERING", "LANDING"].indexOf(groundLink.mission.state) >= 0
     readonly property bool landingLocked: groundLink.remoteAvailable && groundLink.mission.state === "LANDING"
     readonly property bool confirmedRoute: groundLink.remoteAvailable && uploadedLocalJson.length > 0 &&
@@ -49,7 +56,8 @@ Item {
         firstLocalChange() >= lockedPrefixCount && (!continuationMode || localWaypoints.count > groundLink.mission.completed)
     readonly property bool canStartLocal: indoorMode && routeMatches && groundLink.remoteAvailable && !groundLink.busy &&
         groundLink.mission.state === "READY" && groundLink.mission.flight_ready && reviewedSession === groundLink.mission.map_session_id &&
-        uploadedMissionId === groundLink.mission.mission_id && uploadedMissionRevision === groundLink.mission.revision
+        uploadedMissionId === groundLink.mission.mission_id && uploadedMissionRevision === groundLink.mission.revision &&
+        (!routeUsesGimbal || groundLink.mission.gimbal_ready === true)
     Settings { id: localStore; category: "IndoorMissionV1" }
     ListModel { id: localWaypoints }
     property real defaultLocalZ: {
@@ -69,9 +77,77 @@ Item {
         var points = []
         for (var i = 0; i < localWaypoints.count; ++i) {
             var p = localWaypoints.get(i)
-            points.push({id: i + 1, x: Number(p.x), y: Number(p.y), z: Number(p.z), hover_sec: Number(p.hover_sec)})
+            var point = {id: i + 1, x: Number(p.x), y: Number(p.y), z: Number(p.z), hover_sec: Number(p.hover_sec)}
+            if (p.gimbal_mode && p.gimbal_mode !== "none") point.gimbal = rowAction(p)
+            points.push(point)
         }
         return JSON.stringify(points)
+    }
+    // Keep canonical positions in ROS world; the calibrated map only changes their presentation.
+    function displayPoint(x, y) { return IndoorFrame.toDisplay(x, y) }
+    function rowAction(p) {
+        var action = {mode: p.gimbal_mode, pitch_deg: Number(p.gimbal_pitch), speed: Number(p.gimbal_speed),
+            settle_sec: Number(p.gimbal_settle), photo: !!p.gimbal_photo}
+        if (action.mode === "sweep") { action.yaw_min_deg = Number(p.gimbal_min); action.yaw_max_deg = Number(p.gimbal_max) }
+        else action.yaw_deg = Number(p.gimbal_yaw)
+        return action
+    }
+    function validAction(a) {
+        if (a === undefined) return true
+        if (!a || typeof a !== "object" || ["angle", "sweep"].indexOf(a.mode) < 0 || typeof a.photo !== "boolean") return false
+        function numberIn(v, min, max) { return typeof v === "number" && isFinite(v) && v >= min && v <= max }
+        return numberIn(a.pitch_deg, -90, 25) && numberIn(a.speed, 1, 100) && Math.floor(a.speed) === a.speed && numberIn(a.settle_sec, 0, 10) &&
+            (a.mode === "angle" ? numberIn(a.yaw_deg, -135, 135) : numberIn(a.yaw_min_deg, -135, 135) && numberIn(a.yaw_max_deg, -135, 135) && a.yaw_min_deg < a.yaw_max_deg)
+    }
+    function localRow(p) {
+        var a = p.gimbal || {}
+        return {x: p.x, y: p.y, z: p.z, hover_sec: p.hover_sec, gimbal_mode: a.mode || "none",
+            gimbal_yaw: a.yaw_deg === undefined ? 0 : a.yaw_deg, gimbal_pitch: a.pitch_deg === undefined ? -45 : a.pitch_deg,
+            gimbal_min: a.yaw_min_deg === undefined ? -45 : a.yaw_min_deg, gimbal_max: a.yaw_max_deg === undefined ? 45 : a.yaw_max_deg,
+            gimbal_speed: a.speed === undefined ? 30 : a.speed, gimbal_settle: a.settle_sec === undefined ? 1 : a.settle_sec,
+            gimbal_photo: a.photo === undefined ? true : a.photo}
+    }
+    function actionSummary(p) {
+        if (!p.gimbal_mode || p.gimbal_mode === "none") return "无动作"
+        return (p.gimbal_mode === "sweep" ? "扫描" : "定角") + " " + p.gimbal_speed + (p.gimbal_photo ? " · 拍照" : "")
+    }
+    function actionPhaseLabel() {
+        return ({moving:"云台转动中", settling:"等待画面稳定", photo_sent:"拍照指令已发", complete:"云台动作完成", failed:"云台动作异常"})[groundLink.mission.action_phase] ||
+            (groundLink.mission.gimbal_ready ? "云台执行器就绪" : "云台执行器未就绪")
+    }
+    function openLocalEditor(index) {
+        if (!canEditLocal(index)) return
+        localSelected = index
+        var p = localWaypoints.get(index), shown = displayPoint(p.x, p.y)
+        localX.text = shown.x.toFixed(3); localY.text = shown.y.toFixed(3); localZ.text = p.z; localHold.text = p.hover_sec
+        localEdit.originalX = p.x; localEdit.originalY = p.y
+        localEdit.displayX = localX.text; localEdit.displayY = localY.text
+        localGimbalMode.currentIndex = p.gimbal_mode === "sweep" ? 2 : p.gimbal_mode === "angle" ? 1 : 0
+        localYaw.text = p.gimbal_yaw; localPitch.text = p.gimbal_pitch
+        localYawMin.text = p.gimbal_min; localYawMax.text = p.gimbal_max
+        localGimbalSpeed.value = p.gimbal_speed; localSettle.text = p.gimbal_settle; localPhoto.checked = p.gimbal_photo
+        localEdit.open()
+    }
+    function saveLocalEditor() {
+        var shownX = Number(localX.text), shownY = Number(localY.text), pz = Number(localZ.text), hold = Number(localHold.text)
+        var world = IndoorFrame.toWorld(shownX, shownY)
+        // Opening and saving an unchanged coordinate must not introduce rotation/rounding drift.
+        if (localX.text === localEdit.displayX && localY.text === localEdit.displayY) world = Qt.point(localEdit.originalX, localEdit.originalY)
+        if (!canEditLocal(localSelected) || !localX.text.trim().length || !localY.text.trim().length || !localZ.text.trim().length || !localHold.text.trim().length || !validLocal(world.x, world.y, pz, hold)) {
+            actionMessage("请输入有效坐标和 0–60 秒悬停时间"); return
+        }
+        var point = {x: world.x, y: world.y, z: pz, hover_sec: hold}
+        if (localGimbalMode.currentIndex > 0) {
+            point.gimbal = {mode: localGimbalMode.currentIndex === 2 ? "sweep" : "angle", pitch_deg: Number(localPitch.text),
+                speed: Math.round(localGimbalSpeed.value), settle_sec: Number(localSettle.text), photo: localPhoto.checked}
+            if (point.gimbal.mode === "sweep") { point.gimbal.yaw_min_deg = Number(localYawMin.text); point.gimbal.yaw_max_deg = Number(localYawMax.text) }
+            else point.gimbal.yaw_deg = Number(localYaw.text)
+            if (!localPitch.text.trim().length || !localSettle.text.trim().length ||
+                    (point.gimbal.mode === "angle" ? !localYaw.text.trim().length : !localYawMin.text.trim().length || !localYawMax.text.trim().length) || !validAction(point.gimbal)) {
+                actionMessage("云台角度、扫描范围或稳定时间无效"); return
+            }
+        }
+        localWaypoints.set(localSelected, localRow(point)); localRevision++; localEdit.close()
     }
     function validLocal(x, y, z, hold) {
         return isFinite(x) && isFinite(y) && isFinite(z) && isFinite(hold) && Math.abs(x) <= 1000 && Math.abs(y) <= 1000 && z >= 0 && z <= 100 && hold >= 0 && hold <= 60
@@ -79,7 +155,7 @@ Item {
     function addLocal(x, y, z) {
         var alt = (z !== undefined && isFinite(z)) ? z : ((typeof defaultLocalZ !== "undefined" && isFinite(defaultLocalZ)) ? defaultLocalZ : 1.0)
         if (!localEditable || localWaypoints.count >= 200 || !validLocal(x, y, alt, 2)) return
-        localWaypoints.append({x: Number(x.toFixed(2)), y: Number(y.toFixed(2)), z: Number(alt.toFixed(2)), hover_sec: 2.0})
+        localWaypoints.append(localRow({x: Number(x.toFixed(2)), y: Number(y.toFixed(2)), z: Number(alt.toFixed(2)), hover_sec: 2.0}))
         localSelected = localWaypoints.count - 1; localRevision++
     }
     function moveLocal(index, x, y) {
@@ -108,7 +184,7 @@ Item {
         var points = JSON.parse(uploadedLocalJson)
         localWaypoints.clear()
         for (var i = 0; i < points.length; ++i) {
-            var p = points[i]; localWaypoints.append({x: p.x, y: p.y, z: p.z, hover_sec: p.hover_sec})
+            var p = points[i]; localWaypoints.append(localRow(p))
         }
         localSelected = Math.min(localSelected, localWaypoints.count - 1); localRevision++
     }
@@ -148,11 +224,12 @@ Item {
                     if (typeof p[key] !== "number") throw new Error("需要数值字段 x/y/z/hover_sec")
                 }
                 if (!validLocal(p.x, p.y, p.z, p.hover_sec)) throw new Error("局部坐标或悬停时间无效")
+                if (!validAction(p.gimbal)) throw new Error("云台动作参数无效")
             }
             if (continuationMode) clearConfirmedRoute()
             localWaypoints.clear()
             for (i = 0; i < points.length; ++i) {
-                p = points[i]; localWaypoints.append({x: p.x, y: p.y, z: p.z, hover_sec: p.hover_sec})
+                p = points[i]; localWaypoints.append(localRow(p))
             }
             localSelected = localWaypoints.count ? 0 : -1; localRevision++
             routeDialog.close()
@@ -179,7 +256,10 @@ Item {
     }
     function startLocal() {
         if (!canStartLocal) { actionMessage("请上传当前航线，并等待机载起飞悬停及任务就绪"); return }
-        groundLink.startUploadedMission(groundLink.mission.mission_id, groundLink.mission.revision, reviewedSession)
+        pendingGimbalStart = routeUsesGimbal
+        if (pendingGimbalStart) gimbalOwnershipHeld = true
+        pendingStartRequest = groundLink.startUploadedMission(groundLink.mission.mission_id, groundLink.mission.revision, reviewedSession)
+        if (!pendingStartRequest.length) { pendingGimbalStart = false; if (groundLink.remoteAvailable && !missionActive) gimbalOwnershipHeld = false }
     }
     function returnLocal() {
         if (!canReturnLocal) return
@@ -200,6 +280,8 @@ Item {
     }
     function handleMissionChanged() {
         if (!groundLink.remoteAvailable) { reviewedSession = ""; return }
+        if (missionActive && (groundLink.mission.gimbal_required === true || routeUsesGimbal)) gimbalOwnershipHeld = true
+        else if (!missionActive) gimbalOwnershipHeld = false
         if (reviewedSession !== groundLink.mission.map_session_id) reviewedSession = ""
         // changed precedes commandFinished for ACKs. Preserve the baseline until the matching update ACK arrives.
         var awaitingRevision = pendingUpdateRequest.length && pendingUpdateSession === groundLink.mission.map_session_id &&
@@ -207,6 +289,9 @@ Item {
         if (uploadedMissionId.length && !confirmedRoute && !awaitingRevision) clearConfirmedRoute()
     }
     function finishLocalCommand(requestId, operation, accepted) {
+        if (operation === "start" && requestId === pendingStartRequest) {
+            pendingGimbalStart = false; pendingStartRequest = ""
+        }
         if (operation === "upload" && requestId === pendingUploadRequest) {
             if (accepted && groundLink.remoteAvailable && pendingUploadSession === groundLink.mission.map_session_id && groundLink.mission.revision === 1) {
                 uploadedLocalJson = pendingUploadJson; uploadedMissionId = groundLink.mission.mission_id
@@ -225,6 +310,10 @@ Item {
             pendingUpdateRequest = ""
             handleMissionChanged()
         }
+    }
+    Connections {
+        target: IndoorFrame
+        function onCalibrationChanged() { page.reviewedSession = ""; if (localEdit.visible) localEdit.close() }
     }
     Connections {
         target: groundLink
@@ -484,7 +573,7 @@ Item {
                     Repeater {
                         model: [
                             ["定位", groundLink.odomFresh ? "world 坐标有效" : "未获得 world 定位"], ["飞行模式", groundLink.mode || "—"],
-                            ["位置", groundLink.odomFresh ? groundLink.worldX.toFixed(1) + ", " + groundLink.worldY.toFixed(1) + " m" : "—"], ["高度", groundLink.odomFresh ? groundLink.worldZ.toFixed(1) + " m (world)" : "—"],
+                            ["位置", groundLink.odomFresh ? page.displayPoint(groundLink.worldX, groundLink.worldY).x.toFixed(1) + ", " + page.displayPoint(groundLink.worldX, groundLink.worldY).y.toFixed(1) + " m" : "—"], ["高度", groundLink.odomFresh ? groundLink.worldZ.toFixed(1) + " m (world)" : "—"],
                             ["速度", "—"], ["卫星数", "—"], ["状态", groundLink.missionReady ? "机载任务就绪" : "未就绪"]
                         ]
                         delegate: Row {
@@ -536,6 +625,7 @@ Item {
                     Row { width: parent.width; Text { text: "航点进度"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: groundLink.remoteAvailable ? groundLink.mission.completed + " / " + groundLink.mission.total : "—"; width: 120; color: "#dce9f7"; font.pixelSize: 13 } Text { width: 44; horizontalAlignment: Text.AlignRight; text: groundLink.remoteAvailable && groundLink.mission.total > 0 ? Math.round(groundLink.mission.completed / groundLink.mission.total * 100) + "%" : "—"; color: "#dce9f7"; font.pixelSize: 13 } }
                     Rectangle { width: parent.width; height: 13; radius: 6; color: "#143149"; Rectangle { width: groundLink.remoteAvailable && groundLink.mission.total > 0 ? parent.width * groundLink.mission.completed / groundLink.mission.total : 0; height: parent.height; radius: 6; color: "#087dff" } }
                     Row { width: parent.width; Text { text: "机载版本"; width: 84; color: "#aebfd0"; font.pixelSize: 13 } Text { text: groundLink.remoteAvailable ? "v" + groundLink.mission.revision + " · 当前航点 " + (groundLink.mission.current_waypoint_id || "—") : "—"; color: "#dce9f7"; font.pixelSize: 13 } }
+                    Text { width: parent.width; text: page.actionPhaseLabel(); color: groundLink.mission.action_phase === "failed" ? "#ff8276" : "#9fc8d8"; font.pixelSize: 12; elide: Text.ElideRight }
                     Grid {
                         width: parent.width; columns: 2; spacing: 8
                         GButton { width: 119; height:36; text: groundLink.mission.completed > 0 && groundLink.mission.state === "READY" ? "开始续飞" : "开始任务"; icon: "▶"; fill: "#00b968"; hoverFill: "#00d079"; enabled: page.canStartLocal; onClicked: page.startLocal() }
@@ -583,11 +673,7 @@ Item {
                 onWaypointMoved: page.moveLocal(index, xMeters, yMeters)
                 onWaypointSelected: page.localSelected = index
                 onWaypointDoubleClicked: {
-                    if (!page.canEditLocal(index)) return
-                    page.localSelected = index
-                    var pt = localWaypoints.get(index)
-                    localX.text = pt.x; localY.text = pt.y; localZ.text = pt.z; localHold.text = pt.hover_sec
-                    localEdit.open()
+                    page.openLocalEditor(index)
                 }
                 onClearRequested: clearRouteDialog.open()
                 onOutdoorRequested: page.indoorMode = false
@@ -652,7 +738,7 @@ Item {
             GCard {
                 id: gimbal
                 anchors.left: parent.left; anchors.right: parent.right; anchors.top: realtime.bottom; anchors.topMargin: 10
-                height: 268
+                height: 286
                 title: "云台控制"
 
                 // ── 状态与重连 ──
@@ -680,6 +766,7 @@ Item {
 
                 Row {
                     x: 11; y: 8; spacing: 20
+                    enabled: !page.automaticGimbalBusy
                     // ── 360° 拨杆：杆量 → 云台转向速度（SDK 0x07）──
                     Item {
                         id: joy
@@ -762,8 +849,7 @@ Item {
                             anchors.bottom: parent.bottom; anchors.bottomMargin: 3
                             font.pixelSize: 9
                             color: (joy.yawRate || joy.pitchRate) ? "#00e787" : "#5b7488"
-                            text: "偏航 " + (joy.yawRate > 0 ? "+" : "") + joy.yawRate
-                                + "  俯仰 " + (joy.pitchRate > 0 ? "+" : "") + joy.pitchRate
+                            text: "偏航 " + gimbalLink.yawRate + "  俯仰 " + gimbalLink.pitchRate
                         }
                         MouseArea {
                             id: stickMouse
@@ -789,6 +875,10 @@ Item {
                         Connections {
                             target: window
                             function onActiveChanged() { if (!window.active && joy.dragging) joy.release() }
+                        }
+                        Connections {
+                            target: page
+                            function onAutomaticGimbalBusyChanged() { if (page.automaticGimbalBusy && joy.dragging) joy.release() }
                         }
                     }
                     // ── 滑条：绝对角度 / 变倍 ──
@@ -859,6 +949,7 @@ Item {
                 // ── 云台模式与快捷动作 ──
                 Row {
                     x: 12; y: 122; spacing: 6
+                    enabled: !page.automaticGimbalBusy
                     Repeater {
                         model: [["锁定", 0], ["跟随", 1], ["FPV", 2]]
                         delegate: GButton {
@@ -873,9 +964,19 @@ Item {
                     GButton { width: 58; height: 30; text: "软重启"; onClicked: gimbalLink.softReboot() }
                 }
 
+                Row {
+                    x: 12; y: 157; spacing: 6
+                    enabled: !page.automaticGimbalBusy
+                    Text { text: "拨杆转速"; width: 66; anchors.verticalCenter: parent.verticalCenter; color: "#aebfd0"; font.pixelSize: 12 }
+                    Slider { objectName: "manualGimbalSpeed"; width: 184; height: 27; from: 1; to: 100; stepSize: 1; value: gimbalLink.manualSpeed; onMoved: gimbalLink.manualSpeed = Math.round(value) }
+                    Text { text: gimbalLink.manualSpeed + " / 100"; width: 62; anchors.verticalCenter: parent.verticalCenter; color: "#dce9f7"; font.pixelSize: 12 }
+                    Text { text: page.automaticGimbalBusy ? "自动中" : "SDK档位"; anchors.verticalCenter: parent.verticalCenter; color: "#91adc3"; font.pixelSize: 10 }
+                }
+
                 // ── 相机功能 ──
                 Row {
                     anchors.left: parent.left; anchors.leftMargin: 11; anchors.bottom: parent.bottom; anchors.bottomMargin: 11; spacing: 7
+                    enabled: !page.automaticGimbalBusy
                     Repeater {
                         model: [["拍照", "◉"], ["录像", "■"], ["变焦+", "⌕"], ["变焦−", "⌕"]]
                         delegate: GButton {
@@ -953,7 +1054,7 @@ Item {
             Rectangle {
                 x: 0; y: 74; width: parent.width; height: 32; color: "#0a2234"
                 Row {
-                    Repeater { model: [["序号", 52], ["X (m)", 110], ["Y (m)", 110], ["Z 局部高度 (m)", 130], ["悬停 (s)", 100], ["状态", 120], ["操作", 150]]
+                    Repeater { model: [["序号", 42], [IndoorFrame.forwardAxes ? "X 右 (m)" : "X world", 80], [IndoorFrame.forwardAxes ? "Y 前 (m)" : "Y world", 80], ["Z (m)", 80], ["悬停 (s)", 70], ["云台动作", 140], ["状态", 100], ["操作", 140]]
                         delegate: Text { width: modelData[1]; height: 32; text: modelData[0]; color: "#9fb4c8"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
                 }
@@ -969,17 +1070,17 @@ Item {
                     property real pointY: model.y
                     property real pointZ: model.z
                     property real pointHold: model.hover_sec
+                    property point displayXY: page.displayPoint(pointX, pointY)
+                    property string pointAction: page.actionSummary(model)
                     width: ListView.view.width; height: 35
                     color: index === page.localSelected ? "#0757ad" : index % 2 ? "#081d2d" : "#071725"
                     MouseArea { anchors.fill: parent; onClicked: page.localSelected = index }
                     Row {
                         Repeater {
-                            model: [[index + 1, 52], [localRow.pointX.toFixed(2), 110], [localRow.pointY.toFixed(2), 110], [localRow.pointZ.toFixed(2), 130], [localRow.pointHold, 100], [page.localPointState(index), 120]]
+                            model: [[index + 1, 42], [localRow.displayXY.x.toFixed(2), 80], [localRow.displayXY.y.toFixed(2), 80], [localRow.pointZ.toFixed(2), 80], [localRow.pointHold, 70], [localRow.pointAction, 140], [page.localPointState(index), 100]]
                             delegate: Text { width: modelData[1]; height: 35; text: modelData[0]; color: "#dce9f7"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
-                        GButton { text: "编辑"; height: 31; width: 65; enabled: page.canEditLocal(index); onClicked: {
-                            page.localSelected = index; localX.text = localRow.pointX; localY.text = localRow.pointY; localZ.text = localRow.pointZ; localHold.text = localRow.pointHold; localEdit.open()
-                        } }
+                        GButton { text: "编辑"; height: 31; width: 65; enabled: page.canEditLocal(index); onClicked: page.openLocalEditor(index) }
                         GButton { text: "删除"; height: 31; width: 65; enabled: page.canEditLocal(index); onClicked: page.removeLocal(index) }
                     }
                 }
@@ -988,23 +1089,36 @@ Item {
     }
     Dialog {
         id: localEdit
+        objectName: "localWaypointEditor"
+        property real originalX: 0
+        property real originalY: 0
+        property string displayX: ""
+        property string displayY: ""
         title: "编辑局部航点 " + (page.localSelected + 1)
-        width: 420; height: 320; x: (page.width - width) / 2; y: (page.height - height) / 2; modal: true
+        width: 480; height: 620; x: (page.width - width) / 2; y: Math.max(0, (page.height - height) / 2); modal: true
         background: Rectangle { color: "#0a2234"; border.color: "#1b5279"; radius: 6 }
+        header: Text { text: localEdit.title; color: "#dce9f7"; font.pixelSize: 17; font.bold: true; padding: 12 }
         contentItem: Column {
-            spacing: 12
-            Row { Text { text: "X (m)"; width: 95; color: "white" } GField { id: localX; width: 270 } }
-            Row { Text { text: "Y (m)"; width: 95; color: "white" } GField { id: localY; width: 270 } }
-            Row { Text { text: "Z 局部高度"; width: 95; color: "white" } GField { id: localZ; width: 270 } }
-            Row { Text { text: "悬停 (s)"; width: 95; color: "white" } GField { id: localHold; width: 270 } }
-            GButton { text: "保存"; fill: "#087dff"; onClicked: {
-                var px = Number(localX.text), py = Number(localY.text), pz = Number(localZ.text), hold = Number(localHold.text)
-                if (!page.canEditLocal(page.localSelected) || !localX.text.trim().length || !localY.text.trim().length || !localZ.text.trim().length || !localHold.text.trim().length || !page.validLocal(px, py, pz, hold)) {
-                    page.actionMessage("请输入有效的局部坐标和 0–60 秒悬停时间"); return
-                }
-                localWaypoints.set(page.localSelected, {x: px, y: py, z: pz, hover_sec: hold})
-                page.localRevision++; localEdit.close()
-            } }
+            spacing: 9
+            Text { width: parent.width; text: IndoorFrame.forwardAxes ? "地图坐标：X 向右 · Y 向前" : "原始 world 坐标（已手动选择）"; color: "#95c8de"; font.pixelSize: 12 }
+            Row { Text { text: "X (m)"; width: 110; color: "white" } GField { id: localX; objectName: "localEditX"; width: 320 } }
+            Row { Text { text: "Y (m)"; width: 110; color: "white" } GField { id: localY; objectName: "localEditY"; width: 320 } }
+            Row { Text { text: "Z 局部高度"; width: 110; color: "white" } GField { id: localZ; width: 320 } }
+            Row { Text { text: "悬停 (s)"; width: 110; color: "white" } GField { id: localHold; width: 320 } }
+            Rectangle { width: parent.width; height: 1; color: "#21516d" }
+            Row { Text { text: "到点云台动作"; width: 110; color: "white" } ChoiceField { id: localGimbalMode; objectName: "waypointGimbalMode"; width: 320; model: ["无动作", "转到指定角度", "水平范围扫描"] } }
+            Text { width: parent.width; wrapMode: Text.WordWrap; color: "#ffcb86"; font.pixelSize: 11
+                text: groundLink.mission.gimbal_capabilities && groundLink.mission.gimbal_capabilities.version === 1 ? "水平角：右转为正；俯仰角：抬头为正。" : "当前网关未声明云台动作支持；可编辑草稿，升级机载程序后上传。"
+            }
+            Row { enabled: localGimbalMode.currentIndex === 1; Text { text: "水平角 (°)"; width: 110; color: "white" } GField { id: localYaw; objectName: "waypointGimbalYaw"; width: 320; placeholder: "−135 到 135" } }
+            Row { enabled: localGimbalMode.currentIndex === 2; Text { text: "扫描起止 (°)"; width: 110; color: "white" } GField { id: localYawMin; width: 155 } Item { width: 10; height: 1 } GField { id: localYawMax; width: 155 } }
+            Row { enabled: localGimbalMode.currentIndex > 0; Text { text: "俯仰角 (°)"; width: 110; color: "white" } GField { id: localPitch; objectName: "waypointGimbalPitch"; width: 320; placeholder: "−90 到 25；向下为负" } }
+            Row { enabled: localGimbalMode.currentIndex > 0; Text { text: "转速档位"; width: 110; color: "white" } Slider { id: localGimbalSpeed; objectName: "waypointGimbalSpeed"; width: 245; height: 31; from: 1; to: 100; stepSize: 1 } Text { width: 75; text: Math.round(localGimbalSpeed.value) + " / 100"; color: "#dce9f7"; anchors.verticalCenter: parent.verticalCenter } }
+            Row { enabled: localGimbalMode.currentIndex > 0; Text { text: "稳定等待 (s)"; width: 110; color: "white" } GField { id: localSettle; objectName: "waypointGimbalSettle"; width: 320; placeholder: "0 到 10" } }
+            CheckBox { id: localPhoto; objectName: "waypointGimbalPhoto"; enabled: localGimbalMode.currentIndex > 0; text: localGimbalMode.currentIndex === 2 ? "扫描到终点并稳定后拍照一次" : "转动到位并稳定后拍照一次"
+                contentItem: Text { text: parent.text; color: "#dce9f7"; leftPadding: parent.indicator.width + 6; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12 }
+            }
+            GButton { objectName: "saveLocalWaypoint"; text: "保存航点"; fill: "#087dff"; onClicked: page.saveLocalEditor() }
         }
     }
 
@@ -1337,7 +1451,7 @@ Item {
         modal:true
         background: Rectangle {color:"#0a2234"; border.color:"#1b5279"; radius:6}
         contentItem: Column { spacing:12
-            Text {text: page.indoorMode ? "局部航点数组：x / y / z / hover_sec（单位米、秒）" : "粘贴包含 lat / lon / alt / speed 字段的航点数组"; color:"#cfe0ef"; font.pixelSize:14}
+            Text { width: parent.width; wrapMode: Text.WordWrap; text: page.indoorMode ? "原始 world 航点 JSON：x / y / z / hover_sec，可选 gimbal。地图标定只改变显示，JSON 始终使用 world 坐标。" : "粘贴包含 lat / lon / alt / speed 字段的航点数组"; color:"#cfe0ef"; font.pixelSize:13}
             ScrollView { width:parent.width; height:340; TextArea {id:routeInput; selectByMouse:true; wrapMode:TextEdit.Wrap; color:"#dce9f7"; font.pixelSize:13; background:Rectangle {color:"#061522"}} }
             Row {spacing:10; GButton {text:"导入"; fill:"#087dff"; onClicked: page.indoorMode ? page.importLocal(routeInput.text) : page.importRoute()} GButton {text:"取消"; onClicked:routeDialog.close()} }
         }

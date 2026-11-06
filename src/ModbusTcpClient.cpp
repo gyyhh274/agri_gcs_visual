@@ -25,6 +25,15 @@ ModbusTcpClient::ModbusTcpClient(QObject *parent) : QObject(parent) {
     connect(&m_socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred), this,
             [this](QAbstractSocket::SocketError) { fail(m_socket.errorString()); });
 }
+ModbusTcpClient::~ModbusTcpClient() {
+    // The socket outlives the log/buffers in member destruction order. Stop it
+    // while those members still exist, without emitting callbacks into an owner
+    // whose own members may already be destroyed.
+    QObject::disconnect(&m_socket, nullptr, this, nullptr);
+    QObject::disconnect(&m_timeout, nullptr, this, nullptr);
+    m_timeout.stop();
+    m_socket.abort();
+}
 void ModbusTcpClient::trace(const QString &message) {
     m_log.append(QDateTime::currentDateTime().toString("HH:mm:ss.zzz ") + message);
     while (m_log.size() > 100) m_log.removeFirst();

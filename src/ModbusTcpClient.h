@@ -9,6 +9,7 @@ class ModbusTcpClient : public QObject {
     Q_OBJECT
 public:
     explicit ModbusTcpClient(QObject *parent = nullptr);
+    ~ModbusTcpClient() override;
     bool connected() const { return m_socket.state() == QAbstractSocket::ConnectedState; }
     bool connecting() const { return m_socket.state() == QAbstractSocket::ConnectingState || m_socket.state() == QAbstractSocket::HostLookupState; }
     bool busy() const { return m_function != 0; }

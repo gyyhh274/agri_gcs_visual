@@ -83,7 +83,7 @@ int main(int argc, char **argv)
         QPointer<QObject> task = window->findChild<QObject *>("taskPage"); check(task, "No task page");
         check(eval(task, "JSON.parse(localJson())[0].x").toDouble() == -2.36, "Saved fixture not loaded");
         eval(task, "moveLocal(0,1.35,1.57)");
-        const auto moved = eval(task, "localJson()").toString();
+        auto moved = eval(task, "localJson()").toString();
         auto switchPage = [&](int index) { window->setProperty("pageIndex", index); QCoreApplication::processEvents(); };
         switchPage(2);
         QPointer<QObject> settingsPage = window->findChild<QObject *>("settingsPage");
@@ -126,15 +126,55 @@ int main(int argc, char **argv)
             {"state", "IDLE"}, {"current_waypoint_id", 0}, {"completed", 0}, {"total", 0}, {"reason", ""},
             {"odom_fresh", true}, {"flight_ready", false}, {"world_x", 0.}, {"world_y", 0.}, {"world_z", 0.},
             {"max_abs_xy", 30.}, {"min_z", .3}, {"max_z", 2.5}};
+        mission["gimbal_capabilities"] = QJsonObject{{"version", 1}, {"modes", QJsonArray{"angle", "sweep"}}, {"photo", true}};
+        mission["gimbal_ready"] = true;
         auto send = [&](QJsonObject frame) { peer->write(QJsonDocument(frame).toJson(QJsonDocument::Compact) + '\n'); peer->flush(); };
         send({{"type", "telemetry"}, {"protocol", 2}, {"server", "agri-onboard-ros"},
             {"fcu_connected", true}, {"armed", false}, {"mission_ready", false}, {"odom_fresh", true}, {"mode", "STABILIZED"},
             {"battery_percent", 67.}, {"world_x", 0.}, {"world_y", 0.}, {"world_z", 0.}, {"mission", mission}});
         until([&] { return link.remoteAvailable(); });
+        eval(task, "reviewedSession = 'qa-session'; IndoorFrame.setRotation(90, 'qa-session')");
+        check(task->property("reviewedSession").toString().isEmpty(), "Calibration kept stale coordinate review");
+        check(std::abs(eval(task, "displayPoint(1.35,1.57).x").toDouble() + 1.57) < 1e-8, "Rotated display X wrong");
+        check(std::abs(eval(task, "displayPoint(1.35,1.57).y").toDouble() - 1.35) < 1e-8, "Forward world X did not become displayed Y");
+        eval(task, "openLocalEditor(0); saveLocalEditor()");
+        check(eval(task, "localJson()").toString() == moved, "Opening and saving rotated editor moved world waypoint");
+        eval(task, "openLocalEditor(0)");
+        auto *gimbalMode = task->findChild<QObject *>("waypointGimbalMode");
+        auto *gimbalYaw = task->findChild<QObject *>("waypointGimbalYaw");
+        auto *gimbalPitch = task->findChild<QObject *>("waypointGimbalPitch");
+        check(gimbalMode && gimbalYaw && gimbalPitch, "Missing waypoint action editor");
+        gimbalMode->setProperty("currentIndex", 1); gimbalYaw->setProperty("text", "25"); gimbalPitch->setProperty("text", "-35");
+        if (qEnvironmentVariableIsSet("AGRI_GCS_GIMBAL_SCREENSHOT")) {
+            auto *quickWindow = qobject_cast<QQuickWindow *>(window);
+            check(quickWindow, "Missing gimbal preview window"); quickWindow->show(); QTest::qWait(200);
+            auto capture = quickWindow->contentItem()->grabToImage(); check(!capture.isNull(), "Cannot grab gimbal UI");
+            bool ready = false; QObject::connect(capture.data(), &QQuickItemGrabResult::ready, [&] { ready = true; });
+            until([&] { return ready; });
+            check(capture->image().save(qEnvironmentVariable("AGRI_GCS_GIMBAL_SCREENSHOT")), "Cannot save gimbal screenshot");
+        }
+        eval(task, "saveLocalEditor()"); moved = eval(task, "localJson()").toString();
+        if (qEnvironmentVariableIsSet("AGRI_GCS_CALIBRATION_SCREENSHOT")) {
+            auto *mapPanel = task->findChild<QObject *>("indoorMapPanel"); check(mapPanel, "Missing indoor map");
+            auto *calibration = window->findChild<QObject *>("indoorCalibrationDialog"); check(calibration, "Missing calibration dialog");
+            check(QMetaObject::invokeMethod(calibration, "open"), "Cannot open calibration dialog");
+            auto *quickWindow = qobject_cast<QQuickWindow *>(window); check(quickWindow, "Missing calibration preview window");
+            quickWindow->show(); QTest::qWait(200);
+            auto capture = quickWindow->contentItem()->grabToImage(); check(!capture.isNull(), "Cannot grab calibration UI");
+            bool ready = false; QObject::connect(capture.data(), &QQuickItemGrabResult::ready, [&] { ready = true; });
+            until([&] { return ready; });
+            check(capture->image().save(qEnvironmentVariable("AGRI_GCS_CALIBRATION_SCREENSHOT")), "Cannot save calibration screenshot");
+            check(QMetaObject::invokeMethod(calibration, "close"), "Cannot close calibration dialog");
+        }
+        const auto action = QJsonDocument::fromJson(moved.toUtf8()).array()[0].toObject()["gimbal"].toObject();
+        check(action["mode"] == "angle" && action["yaw_deg"].toDouble() == 25 && action["pitch_deg"].toDouble() == -35 && action["speed"].toInt() == 30 && action["photo"].toBool(), "Editor lost waypoint gimbal parameters");
+        eval(task, "importLocal('[{\"x\":1,\"y\":2,\"z\":1,\"hover_sec\":2,\"gimbal\":null}]')");
+        check(eval(task, "localJson()").toString() == moved, "Invalid gimbal import replaced valid route");
         eval(task, "reviewedSession = 'qa-session'; uploadLocal()"); until([&] { return peer->canReadLine(); });
         const auto upload = QJsonDocument::fromJson(peer->readLine()).object();
         check(upload.value("operation") == "upload", "Expected upload frame");
         check(upload.value("waypoints").toArray()[0].toObject().value("x").toDouble() == 1.35, "Uploaded the old X");
+        check(upload["waypoints"].toArray()[0].toObject()["gimbal"].toObject() == action, "Wire upload lost gimbal action");
         switchPage(1); // ACK arrives while the task page is hidden.
         mission["mission_id"] = upload.value("mission_id"); mission["revision"] = 1; mission["total"] = 1; mission["state"] = "READY";
         send({{"type", "ack"}, {"protocol", 2}, {"request_id", upload.value("request_id")},
@@ -193,6 +233,14 @@ int main(int argc, char **argv)
         eval(task, "startLocal()"); until([&] { return peer->canReadLine(); });
         const auto resume = QJsonDocument::fromJson(peer->readLine()).object();
         check(resume["operation"] == "start" && resume["revision"].toInt() == 2, "Resume did not start confirmed revision");
+        check(!gimbal.manualControlEnabled(), "Starting automatic gimbal route did not lock manual control before ACK");
+        mission["state"] = "FLYING"; mission["gimbal_required"] = true;
+        send({{"type", "ack"}, {"protocol", 2}, {"request_id", resume["request_id"]},
+            {"accepted", true}, {"reason", "Accepted"}, {"mission", mission}});
+        until([&] { return !link.busy(); });
+        check(!gimbal.manualControlEnabled(), "Automatic mission ACK released manual gimbal ownership");
+        peer->disconnectFromHost(); until([&] { return !link.connected(); });
+        check(!gimbal.manualControlEnabled(), "Lost task telemetry prematurely released automatic ownership");
         qInfo("Task session checks passed: unsaved coordinates, hidden upload ACK, confirmed route persistence, repeated page switching, completed-route append ACK and explicit resume without implicit commands.");
         return 0;
     } catch (const std::exception &error) { qCritical("Task session check failed: %s", error.what()); return 1; }

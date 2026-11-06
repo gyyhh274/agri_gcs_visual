@@ -16,3 +16,4 @@ SwitchRow 1.0 SwitchRow.qml
 ConnectionMode 1.0 ConnectionMode.qml
 
 IndoorMapPanel 1.0 IndoorMapPanel.qml
+singleton IndoorFrame 1.0 IndoorFrame.qml

@@ -242,7 +242,11 @@ QString GroundLink::sendCommand(const QString &operation, const QString &session
     }
     if (operation == "update") command.insert("replace_from", replaceFrom);
     const QByteArray frame = QJsonDocument(command).toJson(QJsonDocument::Compact) + '\n';
-    if (frame.size() > kMaxFrameBytes || m_socket.write(frame) != frame.size()) {
+    if (frame.size() > kMaxFrameBytes) {
+        emit notified(QStringLiteral("航线及云台参数超过单帧 64 KiB 上限，请减少航点后再上传"));
+        return {};
+    }
+    if (m_socket.write(frame) != frame.size()) {
         emit notified(QStringLiteral("命令未完整写入；请重连并查询机载状态"));
         m_socket.abort();
         return {};
@@ -306,6 +310,29 @@ bool GroundLink::validateWaypoints(const QVariantList &waypoints)
                 || point.value("hover_sec").toDouble() < 0 || point.value("hover_sec").toDouble() > 60) {
             emit notified(QStringLiteral("航点超出机载配置范围；Z 应为 %1–%2 m").arg(minZ).arg(maxZ));
             return false;
+        }
+        if (point.contains("gimbal")) {
+            const auto capabilities = m_mission.value("gimbal_capabilities").toMap();
+            if (capabilities.value("version").toInt() != 1) {
+                emit notified(QStringLiteral("机载网关尚不支持航点云台动作，请更新配套程序")); return false;
+            }
+            const QJsonValue field = QJsonValue::fromVariant(point.value("gimbal"));
+            if (!field.isObject()) {
+                emit notified(QStringLiteral("航点云台动作格式无效")); return false;
+            }
+            const QJsonObject action = field.toObject();
+            const QString mode = action.value("mode").toString();
+            double pitch, settle, speed, yaw = 0., low = 0., high = 0.;
+            if ((mode != "angle" && mode != "sweep") ||
+                    !finiteNumber(action, "pitch_deg", &pitch) || pitch < -90 || pitch > 25 ||
+                    !finiteNumber(action, "settle_sec", &settle) || settle < 0 || settle > 10 ||
+                    !finiteNumber(action, "speed", &speed) || speed < 1 || speed > 100 || std::floor(speed) != speed ||
+                    !action.value("photo").isBool() ||
+                    (mode == "angle" && (!finiteNumber(action, "yaw_deg", &yaw) || yaw < -135 || yaw > 135)) ||
+                    (mode == "sweep" && (!finiteNumber(action, "yaw_min_deg", &low) ||
+                        !finiteNumber(action, "yaw_max_deg", &high) || low < -135 || high > 135 || low >= high))) {
+                emit notified(QStringLiteral("云台参数无效：水平 ±135°、俯仰 −90–25°、转速 1–100、稳定 0–10 秒")); return false;
+            }
         }
     }
     return true;

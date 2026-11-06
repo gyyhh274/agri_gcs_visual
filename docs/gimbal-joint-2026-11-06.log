@@ -1,0 +1,18 @@
+********* Start testing of JointMissionTest *********
+Config: Using QtTest library 5.15.2, Qt 5.15.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by Clang 10.0.0 (clang-1000.11.45.5) (Apple)), osx 26.6
+PASS   : JointMissionTest::initTestCase()
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] verified isolated fixture 127.0.0.1:28766 session 18e56b7df35bcfdb-4aa8a929
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] COMPLETED point=0 action=complete completed=1/1
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] READY point=0 action=idle completed=0/2
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] FLYING point=1 action=idle completed=0/2
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] HOVERING point=1 action=moving completed=0/2
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] HOVERING point=1 action=settling completed=0/2
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] HOVERING point=1 action=photo_sent completed=0/2
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] HOVERING point=2 action=moving completed=1/2
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] HOVERING point=2 action=settling completed=1/2
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] COMPLETED point=0 action=complete completed=2/2
+QINFO  : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink() [joint] completed two dry-run actions; speeds 25/45, angle+sweep, photo true/false
+PASS   : JointMissionTest::dryRunWaypointActionsThroughActualGroundLink()
+PASS   : JointMissionTest::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 4883ms
+********* Finished testing of JointMissionTest *********
