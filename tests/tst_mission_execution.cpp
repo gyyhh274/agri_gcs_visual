@@ -103,7 +103,7 @@ public:
             {"server","agri-onboard-ros"}, {"fcu_connected",true}, {"armed",armed},
             {"mission_ready",armed}, {"odom_fresh",odomFresh}, {"mode",armed ? "OFFBOARD" : "STABILIZED"},
             {"battery_percent",80.}, {"world_x",worldX}, {"world_y",-.2}, {"world_z",worldZ},
-            {"mission",state}, {"init_phase",initPhase}, {"init_detail",initDetail}, {"init_ok",initPhase == "ready"}, {"map_coordinates_valid",aligned}, {"map_odom_stamp",now}, {"flight_bounds",bounds}};
+            {"mission",state}, {"init_height_supported",true}, {"init_phase",initPhase}, {"init_detail",initDetail}, {"init_ok",initPhase == "ready"}, {"map_coordinates_valid",aligned}, {"map_odom_stamp",now}, {"flight_bounds",bounds}};
         if (taskPeer && taskPeer->state() == QAbstractSocket::ConnectedState)
             taskPeer->write(QJsonDocument(telemetry).toJson(QJsonDocument::Compact)+'\n');
         if (mapPeer && mapPeer->state() == QAbstractSocket::ConnectedState) {
@@ -128,11 +128,12 @@ private slots:
         h.aligned = false;
         QTRY_VERIFY_WITH_TIMEOUT(h.mission.canInitialize(), 4000);
         const QVariantList fence{-1., -1., -.2, 1., 1., 1.8};
-        h.mission.initialize(fence, "/home/nv/Documents/diff-planner-A8mini");
+        h.mission.initialize(fence, "/home/nv/Documents/diff-planner-A8mini", .8);
         QTRY_COMPARE(h.commands.size(), 1);
         const auto command = h.commands.first();
         QCOMPARE(command.value("operation").toString(), QString("initialize"));
         QCOMPARE(command.value("bounds").toArray(), QJsonArray::fromVariantList(fence));
+        QCOMPARE(command.value("takeoff_height").toDouble(), .8);
         QCOMPARE(command.value("project_dir").toString(), QString("/home/nv/Documents/diff-planner-A8mini"));
         QTRY_VERIFY(!h.link.busy());
         h.initPhase = "ekf"; h.initDetail = QStringLiteral("检查 EKF");

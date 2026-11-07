@@ -82,7 +82,7 @@ Rectangle {
     }
     Dialog {
         id: cancelDialog
-        parent: Overlay.overlay; width: 460; height: 400
+        parent: Overlay.overlay; width: 460; height: 450
         x: (parent.width-width)/2; y: (parent.height-height)/2; modal: true
         /* 6 个围栏值，顺序与协议一致：xmin, ymin, zmin, xmax, ymax, zmax。
          * 输入框不用 text 绑定（绑定会和用户键入互相打架，导致"改不动"），
@@ -161,6 +161,20 @@ Rectangle {
                 }
             }
 
+            Row {
+                spacing: 8
+                Text { text: "起飞悬停高度（m）"; color: "#b7cedb"; font.pixelSize: 12
+                       anchors.verticalCenter: parent.verticalCenter }
+                TextField {
+                    id: takeoffHeight; width: 100; height: 30; text: "0.5"
+                    color: "#dce9f7"; font.pixelSize: 12; selectByMouse: true
+                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                    background: Rectangle { color: "#061522"; radius: 4; border.color: "#16405e" }
+                }
+                Text { text: "相对起降点"; color: "#8fb6cc"; font.pixelSize: 11
+                       anchors.verticalCenter: parent.verticalCenter }
+            }
+
             Text { id: fenceHint; text: ""; visible: text.length > 0
                    color: "#e8bb76"; font.pixelSize: 11; width: parent.width; wrapMode: Text.WordWrap }
 
@@ -186,7 +200,12 @@ Rectangle {
                             fenceHint.text = "每个轴必须下限 < 上限"
                             return
                         }
-                        control.mission.initialize(f, VideoConfig.projectDir)
+                        const h = Number(takeoffHeight.text)
+                        if (!isFinite(h) || h <= 0.1 || h >= f[5] - f[2]) {
+                            fenceHint.text = "起飞高度须大于 0.1 m，且小于围栏高度"
+                            return
+                        }
+                        control.mission.initialize(f, VideoConfig.projectDir, h)
                         cancelDialog.close()
                     }
                 }

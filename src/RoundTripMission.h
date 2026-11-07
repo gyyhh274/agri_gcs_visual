@@ -60,7 +60,7 @@ public:
     Q_INVOKABLE void start();
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void clearMission();
-    Q_INVOKABLE void initialize(const QVariantList &bounds, const QString &projectDir);
+    Q_INVOKABLE void initialize(const QVariantList &bounds, const QString &projectDir, double takeoffHeight);
 signals:
     void changed();
 private:
@@ -79,6 +79,7 @@ private:
     QString m_lastInitPhase;
     QVariantList m_pendingInitBounds;
     QString m_pendingInitProject;
+    double m_pendingInitHeight = 0.5;
     qint64 m_initDeadline = 0;
     class QProcess *m_bootstrap = nullptr;
     void startAdapterBootstrap();

@@ -140,6 +140,9 @@ QString GroundLink::sendCommand(const QString &operation, const QString &session
         }
         obj["bounds"] = fence;
         obj["project_dir"] = fields.value("project_dir").toString();
+        const double height = fields.value("takeoff_height").toDouble();
+        if (!std::isfinite(height) || height <= .1) return {};
+        obj["takeoff_height"] = height;
     }
     if (operation == "upload") {
         obj["frame_id"] = "world";
@@ -237,7 +240,7 @@ void GroundLink::consumeLine(const QByteArray &line)
     m_mission = protocol == 2 ? object.value("mission").toObject().toVariantMap() : QVariantMap();
     // 初始化状态位于遥测顶层，供任务面板显示机载异步进度。
     if (protocol == 2) {
-        for (const QString &key : {QStringLiteral("init_phase"), QStringLiteral("init_detail"), QStringLiteral("init_ok")})
+        for (const QString &key : {QStringLiteral("init_phase"), QStringLiteral("init_detail"), QStringLiteral("init_ok"), QStringLiteral("init_height_supported")})
             if (object.contains(key)) m_mission.insert(key, object.value(key).toVariant());
     }
     m_mapValid = protocol == 2 && object.value("map_coordinates_valid").isBool() && object.value("map_coordinates_valid").toBool();

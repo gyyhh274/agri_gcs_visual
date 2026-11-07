@@ -207,14 +207,15 @@ void RoundTripMission::sendInitialize() {
     m_pendingOperation = "initialize";
     m_pendingId = m_link->sendCommand("initialize", task.value("map_session_id").toString(), QString(), 0,
                                       {}, {}, {{"bounds", bounds},
-                                               {"project_dir", m_pendingInitProject}});
+                                               {"project_dir", m_pendingInitProject},
+                                               {"takeoff_height", m_pendingInitHeight}});
     m_status = m_pendingId.isEmpty()
         ? QStringLiteral("未能发送初始化请求")
         : QStringLiteral("正在初始化：清理机载任务并按新围栏重启前置链路…");
     emit changed();
 }
 
-void RoundTripMission::initialize(const QVariantList &bounds, const QString &projectDir) {
+void RoundTripMission::initialize(const QVariantList &bounds, const QString &projectDir, double takeoffHeight) {
     if (!canInitialize() || bounds.size() != 6 || projectDir.trimmed().isEmpty()) return;
     double fence[6];
     for (int i = 0; i < 6; ++i) {
@@ -224,6 +225,13 @@ void RoundTripMission::initialize(const QVariantList &bounds, const QString &pro
     if (!(fence[0] < fence[3] && fence[1] < fence[4] && fence[2] < fence[5])) {
         m_status = QStringLiteral("围栏无效：每个轴必须 min < max"); emit changed(); return;
     }
+    if (!std::isfinite(takeoffHeight) || takeoffHeight <= .1 || takeoffHeight >= fence[5] - fence[2]) {
+        m_status = QStringLiteral("起飞高度须大于 0.1 m，且小于围栏高度"); emit changed(); return;
+    }
+    if (m_link->connected() && !m_link->mission().value("init_height_supported").toBool()) {
+        m_status = QStringLiteral("机载网关版本不支持设置起飞高度，请更新机载程序"); emit changed(); return;
+    }
+    m_pendingInitHeight = takeoffHeight;
     if (!m_link->connected()) {
         m_pendingInitBounds = bounds;
         m_pendingInitProject = projectDir;
@@ -265,10 +273,12 @@ void RoundTripMission::update() {
     // 引导流程：适配器起来、链路恢复后自动补发 initialize
     if (!m_pendingInitBounds.isEmpty()) {
         if (m_link->connected()) {
-            if (canClear()) sendInitialize();
+            if (canClear() && m_link->mission().value("init_height_supported").toBool()) sendInitialize();
             else {
                 m_pendingInitBounds.clear();
-                m_status = QStringLiteral("初始化未发送：请确认飞控未解锁且任务未在执行");
+                m_status = m_link->mission().value("init_height_supported").toBool()
+                    ? QStringLiteral("初始化未发送：请确认飞控未解锁且任务未在执行")
+                    : QStringLiteral("机载网关版本不支持设置起飞高度，请更新机载程序");
             }
         } else if (QDateTime::currentMSecsSinceEpoch() > m_initDeadline) {
             m_pendingInitBounds.clear();
