@@ -114,27 +114,44 @@ Rectangle {
         property var fence: [0, 0, 0, 0, 0, 0]
         property var fields: []
         property var center: ({ valid: false })
+        property bool hasFencePreview: false
+        property real previousCenterX: 0
+        property real previousCenterY: 0
+        property real previousCenterZ: 0
+        property int lastEditedIndex: -1
+        property bool editValid: true
         onOpened: {
             center = { valid: false }
+            hasFencePreview = false
+            lastEditedIndex = -1
+            editValid = true
             refreshFence()
         }
         function refreshFence() {
+            if (hasFencePreview && lastEditedIndex >= 0) {
+                const index = lastEditedIndex
+                if (!commit(index, fields[index].text)) return
+                lastEditedIndex = -1
+            }
             const pos = control.mission.initializationPosition()
             if (!pos.valid) {
                 center = { valid: false }
                 fenceHint.text = "当前位置未更新，请连接机载或等待 LIVE 地图定位，再刷新位置"
                 return
             }
-            let current = center.valid ? fence : groundLink.flightBounds
-            if (!current || current.length !== 6 || current.every(function (v) { return v === 0 }))
-                current = control.mission.flightBounds
-            let width = 2.0, length = 2.0, height = 1.55
-            if (current && current.length === 6 && current[3] > current[0] && current[4] > current[1] && current[5] > current[2]) {
-                width = current[3]-current[0]; length = current[4]-current[1]; height = current[5]-current[2]
+            // 每次打开使用 1 米立方体；同一次编辑内刷新位置时保留各边的偏移。
+            let offsets = [-0.5, -0.5, -0.05, 0.5, 0.5, 0.95]
+            if (hasFencePreview) {
+                offsets = [fence[0]-previousCenterX, fence[1]-previousCenterY, fence[2]-previousCenterZ,
+                           fence[3]-previousCenterX, fence[4]-previousCenterY, fence[5]-previousCenterZ]
             }
             center = pos
-            fence = [pos.x-width/2, pos.y-length/2, pos.z-0.05,
-                     pos.x+width/2, pos.y+length/2, pos.z-0.05+height]
+            previousCenterX = pos.x; previousCenterY = pos.y; previousCenterZ = pos.z
+            hasFencePreview = true
+            lastEditedIndex = -1
+            editValid = true
+            fence = [pos.x+offsets[0], pos.y+offsets[1], pos.z+offsets[2],
+                     pos.x+offsets[3], pos.y+offsets[4], pos.z+offsets[5]]
             fenceHint.text = ""
             Qt.callLater(function () {
                 for (let i = 0; i < 6; ++i)
@@ -142,41 +159,34 @@ Rectangle {
                         cancelDialog.fields[i].text = Number(cancelDialog.fence[i]).toFixed(2)
             })
         }
-        /* 编辑完成后回写；同一轴上下限写反时自动交换，并提示原因。 */
+        /* 每个边界独立编辑，保留用户输入的数值。 */
         function commit(slot, raw) {
-            const value = Number(raw)
-            if (!isFinite(value)) { fenceHint.text = "请输入数字"; return }
+            const value = raw.trim().length ? Number(raw) : NaN
             const next = fence.slice()
-            next[slot] = value
-            let swapped = false
-            const pairs = [[0, 3], [1, 4], [2, 5]]
-            for (let i = 0; i < pairs.length; ++i) {
-                const lo = pairs[i][0], hi = pairs[i][1]
-                if (next[lo] > next[hi]) {
-                    const t = next[lo]; next[lo] = next[hi]; next[hi] = t
-                    swapped = true
-                }
+            let error = ""
+            if (!isFinite(value)) error = "请输入有效数字"
+            else {
+                next[slot] = value
+                if (!(next[0] < next[3] && next[1] < next[4] && next[2] < next[5]))
+                    error = "每个轴的下限必须小于上限"
             }
-            if (center.valid) {
-                const width = next[3]-next[0], length = next[4]-next[1]
-                next[0] = center.x-width/2; next[3] = center.x+width/2
-                next[1] = center.y-length/2; next[4] = center.y+length/2
-            }
-            fence = next
+            editValid = !error
+            if (!error) fence = next
             for (let i = 0; i < 6; ++i)
-                if (fields[i]) fields[i].text = Number(next[i]).toFixed(2)
-            fenceHint.text = swapped ? "下限必须小于上限，已自动交换" : ""
+                if (fields[i]) fields[i].text = Number(fence[i]).toFixed(2)
+            fenceHint.text = error
+            return !error
         }
         background: Rectangle { color: "#0a2234"; border.color: "#28617b"; radius: 6 }
         contentItem: Column {
             spacing: 10
             Text { text: "任务初始化"; color: "white"; font.pixelSize: 18 }
             Text { width: parent.width
-                   text: "每次初始化都以当前位置为水平中心，沿用上次围栏的宽和长。请核对新的边界是否在实际场地内。\n初始化会清理旧任务并重建规划器地图；仅在地面、飞控未解锁时可用。"
+                   text: "默认围栏为 1 m × 1 m × 1 m，以当前位置为水平中心，可自行修改。请核对边界是否在实际场地内。\n初始化会清理旧任务并重建规划器地图；仅在地面、飞控未解锁时可用。"
                    color: "#cfe0ef"; wrapMode: Text.WordWrap; font.pixelSize: 12 }
 
             Text { width: parent.width
-                   text: "本次围栏（world 坐标，m）：X/Y 自动居中；Z 为高度上下限，可按现场调整。"
+                   text: "本次围栏（world 坐标，m）：各边界可单独修改。"
                    color: "#8fb6cc"; font.pixelSize: 11; wrapMode: Text.WordWrap }
             Grid {
                 id: fenceGrid
@@ -198,7 +208,11 @@ Rectangle {
                             selectByMouse: true; inputMethodHints: Qt.ImhFormattedNumbersOnly
                             background: Rectangle { color: "#061522"; radius: 4; border.color: "#16405e" }
                             Component.onCompleted: cancelDialog.fields[modelData.index] = this
-                            onEditingFinished: cancelDialog.commit(modelData.index, text)
+                            onTextEdited: cancelDialog.lastEditedIndex = modelData.index
+                            onEditingFinished: {
+                                cancelDialog.commit(modelData.index, text)
+                                cancelDialog.lastEditedIndex = -1
+                            }
                         }
                     }
                 }
@@ -207,7 +221,7 @@ Rectangle {
             Row {
                 spacing: 8
                 Text { width: 270; color: "#8fb6cc"; font.pixelSize: 11; wrapMode: Text.WordWrap
-                       text: cancelDialog.center.valid ? "中心：(" + Number(cancelDialog.center.x).toFixed(2) + ", " + Number(cancelDialog.center.y).toFixed(2) + ") · " + cancelDialog.center.source : "等待定位" }
+                       text: cancelDialog.center.valid ? "当前位置：(" + Number(cancelDialog.center.x).toFixed(2) + ", " + Number(cancelDialog.center.y).toFixed(2) + ") · " + cancelDialog.center.source : "等待定位" }
                 GButton { width: 100; height: 30; text: "刷新位置"; pixelSize: 12; onClicked: cancelDialog.refreshFence() }
             }
             GButton { width: parent.width; height: 30; text: "连接机载任务服务"; visible: !groundLink.connected; onClicked: control.mission.connectForInitialization() }
@@ -239,7 +253,13 @@ Rectangle {
                     width: 150; height: 35; text: "确认初始化"
                     enabled: control.mission.canInitialize && cancelDialog.center.valid
                     onClicked: {
-                        // 直接读输入框，避免"改完立刻点确认"时 editingFinished 还没触发。
+                        // 焦点尚未离开输入框时，先提交最后一次修改。
+                        if (cancelDialog.lastEditedIndex >= 0) {
+                            const index = cancelDialog.lastEditedIndex
+                            if (!cancelDialog.commit(index, cancelDialog.fields[index].text)) return
+                            cancelDialog.lastEditedIndex = -1
+                        }
+                        if (!cancelDialog.editValid) return
                         const f = []
                         for (let i = 0; i < 6; ++i)
                             f.push(cancelDialog.fields[i] && cancelDialog.fields[i].text.trim().length ? Number(cancelDialog.fields[i].text) : NaN)
@@ -256,10 +276,6 @@ Rectangle {
                             fenceHint.text = "起飞高度须大于 0.1 m，且小于围栏高度"
                             return
                         }
-                        // 不信任编辑完成事件：确认时按预览中心重算水平边界。
-                        const width = f[3]-f[0], length = f[4]-f[1]
-                        f[0] = cancelDialog.center.x-width/2; f[3] = cancelDialog.center.x+width/2
-                        f[1] = cancelDialog.center.y-length/2; f[4] = cancelDialog.center.y+length/2
                         if (control.mission.initialize(f, VideoConfig.projectDir, h)) cancelDialog.close()
                         else fenceHint.text = control.mission.status
                     }

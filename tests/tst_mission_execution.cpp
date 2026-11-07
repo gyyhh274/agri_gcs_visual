@@ -154,20 +154,13 @@ private slots:
         QVERIFY(!h.mission.canInitialize());
         QTest::qWait(150); QCOMPARE(h.commands.size(), 1);
     }
-    void initializationRejectsMovementAndStalePosition() {
+    void initializationPreservesAsymmetricBounds() {
         MissionHarness h;
-        QTRY_VERIFY_WITH_TIMEOUT(h.mission.canInitialize() && h.mission.initializationPosition().value("valid").toBool(), 4000);
-        const QVariantList oldFence{-.6, -1.2, -.2, 1.4, .8, 1.8};
-        h.worldX = .6;
-        QTRY_VERIFY(qAbs(h.link.worldX()-.6) < 1e-6);
-        QVERIFY(!h.mission.initialize(oldFence, "/home/nv/Documents/diff-planner-A8mini", .5));
-        QVERIFY(h.mission.status().contains(QStringLiteral("位置已变化")));
-        QVERIFY(h.commands.isEmpty());
-        h.odomFresh = false;
-        h.map.setPaused(true);
-        QTRY_VERIFY(!h.mission.initializationPosition().value("valid").toBool());
-        QVERIFY(!h.mission.initialize(oldFence, "/home/nv/Documents/diff-planner-A8mini", .5));
-        QVERIFY(h.commands.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(h.mission.canInitialize(), 4000);
+        const QVariantList bounds{-1., -2., -.2, 2.1, .8, 1.8};
+        QVERIFY(h.mission.initialize(bounds, "/home/nv/Documents/diff-planner-A8mini", .5));
+        QTRY_COMPARE(h.commands.size(), 1);
+        QCOMPARE(h.commands.first().value("bounds").toArray(), QJsonArray::fromVariantList(bounds));
     }
     void readinessShowsSpecificUnmetConditions() {
         MissionHarness h;

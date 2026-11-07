@@ -316,24 +316,8 @@ void RoundTripMission::connectForInitialization() {
 
 void RoundTripMission::sendInitialize() {
     const auto task = m_link->mission();
-    QVariantList bounds = m_pendingInitBounds;
+    const QVariantList bounds = m_pendingInitBounds;
     m_pendingInitBounds.clear(); // sendCommand 发出 changed 时避免重复发送。
-    const auto pos = initializationPosition();
-    if (!pos.value("valid").toBool() || bounds.size() != 6) {
-        m_status = QStringLiteral("初始化未发送：当前位置未更新，请等待定位后重新核对围栏"); emit changed(); return;
-    }
-    const double x = pos.value("x").toDouble(), y = pos.value("y").toDouble(), z = pos.value("z").toDouble();
-    const double cx = (bounds[0].toDouble() + bounds[3].toDouble()) / 2.;
-    const double cy = (bounds[1].toDouble() + bounds[4].toDouble()) / 2.;
-    if (std::hypot(x-cx, y-cy) > .05 || z <= bounds[2].toDouble() ||
-        z + m_pendingInitHeight >= bounds[5].toDouble()) {
-        m_status = QStringLiteral("位置已变化或起飞高度超出围栏，请重新核对后初始化"); emit changed(); return;
-    }
-    // 以发送请求时最新位置为中心，保持用户核对过的宽度和长度。
-    const double halfX = (bounds[3].toDouble() - bounds[0].toDouble()) / 2.;
-    const double halfY = (bounds[4].toDouble() - bounds[1].toDouble()) / 2.;
-    bounds[0] = x-halfX; bounds[3] = x+halfX;
-    bounds[1] = y-halfY; bounds[4] = y+halfY;
     m_pendingOperation = "initialize";
     m_pendingId = m_link->sendCommand("initialize", task.value("map_session_id").toString(), QString(), 0,
                                       {}, {}, {{"bounds", bounds},
@@ -360,15 +344,6 @@ bool RoundTripMission::initialize(const QVariantList &bounds, const QString &pro
     }
     if (m_link->connected() && !m_link->mission().value("init_height_supported").toBool()) {
         m_status = QStringLiteral("机载网关版本不支持设置起飞高度，请更新机载程序"); emit changed(); return false;
-    }
-    const auto pos = initializationPosition();
-    if (!pos.value("valid").toBool()) {
-        m_status = QStringLiteral("当前位置未更新，请等待机载或 LIVE 地图定位后重新核对围栏"); emit changed(); return false;
-    }
-    const double x = pos.value("x").toDouble(), y = pos.value("y").toDouble(), z = pos.value("z").toDouble();
-    if (std::hypot(x-(fence[0]+fence[3])/2., y-(fence[1]+fence[4])/2.) > .05 ||
-        z <= fence[2] || z + takeoffHeight >= fence[5]) {
-        m_status = QStringLiteral("位置已变化或起飞高度超出围栏，请重新核对后初始化"); emit changed(); return false;
     }
     m_pendingInitHeight = takeoffHeight;
     if (!m_link->connected()) {
