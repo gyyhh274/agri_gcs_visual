@@ -58,6 +58,7 @@ public:
     Q_INVOKABLE void start();
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void clearMission();
+    Q_INVOKABLE void initialize(const QVariantList &bounds, const QString &projectDir);
 signals:
     void changed();
 private:
@@ -67,12 +68,12 @@ private:
     GroundLink *m_link;
     MappingClient *m_mapping;
     QTimer m_tick, m_reconnect;
-    QList<QVector3D> m_hoverSamples;
     QVector3D m_home, m_target, m_groundOrigin;
     QString m_mapSession, m_taskSession, m_ownedId, m_pendingId, m_pendingOperation;
     QString m_status = QStringLiteral("请连接自动任务网关，核对本次围栏、起降通道和起飞前检查");
     QVariantList m_fence;
     bool m_homeValid = false, m_hasTarget = false, m_uploaded = false;
     double m_height = 1.;
+    QString m_lastInitPhase;
     int m_mappingPort;
 };

@@ -82,17 +82,115 @@ Rectangle {
     }
     Dialog {
         id: cancelDialog
-        parent: Overlay.overlay; width: 370; height: 215
+        parent: Overlay.overlay; width: 460; height: 400
         x: (parent.width-width)/2; y: (parent.height-height)/2; modal: true
+        /* 6 个围栏值，顺序与协议一致：xmin, ymin, zmin, xmax, ymax, zmax。
+         * 输入框不用 text 绑定（绑定会和用户键入互相打架，导致"改不动"），
+         * 改成打开时按值写入、编辑完成后再回写。 */
+        property var fence: [0, 0, 0, 0, 0, 0]
+        property var fields: []
+        onOpened: {
+            let current = control.mission.flightBounds
+            if (!current || current.length !== 6 || current.every(function (v) { return v === 0 }))
+                current = groundLink.flightBounds
+            if (!current || current.length !== 6) {
+                const x = groundLink.worldX, y = groundLink.worldY, z = groundLink.worldZ
+                current = [x - 1, y - 1, z - 0.05, x + 1, y + 1, z + 1.5]
+            }
+            fence = current.slice()
+            fenceHint.text = ""
+            Qt.callLater(function () {
+                for (let i = 0; i < 6; ++i)
+                    if (cancelDialog.fields[i])
+                        cancelDialog.fields[i].text = Number(cancelDialog.fence[i]).toFixed(2)
+            })
+        }
+        /* 编辑完成后回写；同一轴上下限写反时自动交换，并提示原因。 */
+        function commit(slot, raw) {
+            const value = Number(raw)
+            if (!isFinite(value)) { fenceHint.text = "请输入数字"; return }
+            const next = fence.slice()
+            next[slot] = value
+            let swapped = false
+            const pairs = [[0, 3], [1, 4], [2, 5]]
+            for (let i = 0; i < pairs.length; ++i) {
+                const lo = pairs[i][0], hi = pairs[i][1]
+                if (next[lo] > next[hi]) {
+                    const t = next[lo]; next[lo] = next[hi]; next[hi] = t
+                    swapped = true
+                }
+            }
+            fence = next
+            for (let i = 0; i < 6; ++i)
+                if (fields[i]) fields[i].text = Number(next[i]).toFixed(2)
+            fenceHint.text = swapped ? "下限必须小于上限，已自动交换" : ""
+        }
         background: Rectangle { color: "#0a2234"; border.color: "#28617b"; radius: 6 }
         contentItem: Column {
-            spacing: 18
+            spacing: 10
             Text { text: "任务初始化"; color: "white"; font.pixelSize: 18 }
-            Text { width: parent.width; text: "清理机载电脑上已有的任务（含上次失败的任务）并解除失效闩锁，之后可重新记录起降点并上传。\n仅在地面、飞控未解锁时可用；飞行中该按钮不可点击，请用遥控器接管。"; color: "#cfe0ef"; wrapMode: Text.WordWrap; font.pixelSize: 13 }
+            Text { width: parent.width
+                   text: "清理机载电脑上已有的任务并解除失效闩锁，同时按下面 6 个数值设置本次飞行围栏、重启规划器与轨迹服务器。\n规划器重启会重建地图，之后必须重新标定起降点。仅在地面、飞控未解锁时可用。"
+                   color: "#cfe0ef"; wrapMode: Text.WordWrap; font.pixelSize: 12 }
+
+            Text { width: parent.width
+                   text: "本次围栏（world 坐标，单位 m）：X/Y 为水平范围，Z 为高度范围（最低不能低于地面）"
+                   color: "#8fb6cc"; font.pixelSize: 11; wrapMode: Text.WordWrap }
+            Grid {
+                id: fenceGrid
+                columns: 2; spacing: 6; width: parent.width
+                Repeater {
+                    model: [
+                        { label: "X 下限", index: 0 }, { label: "X 上限", index: 3 },
+                        { label: "Y 下限", index: 1 }, { label: "Y 上限", index: 4 },
+                        { label: "Z 最低", index: 2 }, { label: "Z 最高", index: 5 }
+                    ]
+                    delegate: Row {
+                        width: (parent.width - 8) / 2; spacing: 6
+                        Text { width: 52; text: modelData.label; color: "#b7cedb"; font.pixelSize: 12
+                               anchors.verticalCenter: parent.verticalCenter }
+                        TextField {
+                            width: parent.width - 58; height: 30
+                            color: "#dce9f7"; font.pixelSize: 12
+                            selectByMouse: true; inputMethodHints: Qt.ImhFormattedNumbersOnly
+                            background: Rectangle { color: "#061522"; radius: 4; border.color: "#16405e" }
+                            Component.onCompleted: cancelDialog.fields[modelData.index] = this
+                            onEditingFinished: cancelDialog.commit(modelData.index, text)
+                        }
+                    }
+                }
+            }
+
+            Text { id: fenceHint; text: ""; visible: text.length > 0
+                   color: "#e8bb76"; font.pixelSize: 11; width: parent.width; wrapMode: Text.WordWrap }
+
+            Text { width: parent.width
+                   text: "项目目录：" + VideoConfig.projectDir
+                   color: "#8fb6cc"; font.pixelSize: 11; wrapMode: Text.WrapAnywhere }
+
             Row {
                 spacing: 12
-                GButton { width: 140; height: 35; text: "确认初始化"; enabled: control.mission.canClear; onClicked: { control.mission.clearMission(); cancelDialog.close() } }
-                GButton { width: 100; height: 35; text: "保留任务"; onClicked: cancelDialog.close() }
+                GButton {
+                    width: 150; height: 35; text: "确认初始化"
+                    enabled: control.mission.canClear
+                    onClicked: {
+                        // 直接读输入框，避免"改完立刻点确认"时 editingFinished 还没触发。
+                        const f = []
+                        for (let i = 0; i < 6; ++i)
+                            f.push(cancelDialog.fields[i] ? Number(cancelDialog.fields[i].text) : NaN)
+                        if (f.some(function (v) { return !isFinite(v) })) {
+                            fenceHint.text = "围栏数值无效"
+                            return
+                        }
+                        if (!(f[0] < f[3] && f[1] < f[4] && f[2] < f[5])) {
+                            fenceHint.text = "每个轴必须下限 < 上限"
+                            return
+                        }
+                        control.mission.initialize(f, VideoConfig.projectDir)
+                        cancelDialog.close()
+                    }
+                }
+                GButton { width: 110; height: 35; text: "取消"; onClicked: cancelDialog.close() }
             }
         }
     }

@@ -51,6 +51,10 @@ Item {
      *                   不写日志、不出现在进程参数中。 */
     property bool sshUsePassword: false
     property string sshPassword: "" 
+    /* 机载项目目录：任务初始化时在其下拼接
+     * point-mission/manual/planner.launch，带围栏参数重启规划器。
+     * 换一台机载电脑/换项目时只改这一处。 */
+    property string projectDir: "/home/nv/Documents/diff-planner-A8mini"
     readonly property int rtspPort: 8554
     readonly property string streamPath: "a8mini"    // MediaMTX 上的路径名
     readonly property string url: host.indexOf("rtsp://") === 0
@@ -104,6 +108,7 @@ Item {
         property alias sshUser: cfg.sshUser
         property alias sshUsePassword: cfg.sshUsePassword
         property alias sshPassword: cfg.sshPassword
+        property alias projectDir: cfg.projectDir
         property alias userId: cfg.userId
         property alias userPw: cfg.userPw
         property alias codecIndex: cfg.codecIndex

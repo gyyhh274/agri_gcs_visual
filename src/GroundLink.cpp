@@ -115,10 +115,12 @@ void GroundLink::finishCommand(bool accepted, const QString &reason, const QVari
     emit changed();
 }
 QString GroundLink::sendCommand(const QString &operation, const QString &session, const QString &mission,
-                               int revision, const QVariantList &waypoints, const QVariantMap &automatic) {
+                               int revision, const QVariantList &waypoints, const QVariantMap &automatic,
+                               const QVariantMap &fields) {
     if (!m_connected || m_protocol != 2 || busy()
         || (operation != "upload" && operation != "start" && operation != "get_status"
-            && operation != "cancel" && operation != "clear")) return {};
+            && operation != "cancel" && operation != "clear"
+            && operation != "initialize")) return {};
     if (operation != "get_status" && session != m_mission.value("map_session_id").toString()) return {};
     if ((operation == "start" || operation == "cancel")
         && (mission.isEmpty() || mission != m_mission.value("mission_id").toString()
@@ -128,6 +130,19 @@ QString GroundLink::sendCommand(const QString &operation, const QString &session
                     {"require_map_alignment", true}};
     m_pendingId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     obj["request_id"] = m_pendingId;
+    if (operation == "initialize") {
+        // 围栏 6 个数值 + 机载项目目录；机载会据此重启规划器。
+        const QVariantList bounds = fields.value("bounds").toList();
+        if (bounds.size() != 6) return {};
+        QJsonArray fence;
+        for (const auto &value : bounds) {
+            const double number = value.toDouble();
+            if (!std::isfinite(number)) return {};
+            fence.append(number);
+        }
+        obj["bounds"] = fence;
+        obj["project_dir"] = fields.value("project_dir").toString();
+    }
     if (operation == "upload") {
         obj["frame_id"] = "world";
         obj["waypoints"] = QJsonArray::fromVariantList(waypoints);

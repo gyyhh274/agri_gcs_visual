@@ -18,13 +18,12 @@ RoundTripMission::RoundTripMission(GroundLink *link, MappingClient *mapping, int
                 && mission.value("map_session_id").toString() == m_taskSession && mission.value("revision").toInt() == 1
                 && mission.value("total").toInt() == 2 && mission.value("state").toString() == "READY"
                 && mission.value("automatic").toBool();
-        if (m_pendingOperation == "clear" && accepted) {
+        if ((m_pendingOperation == "clear" || m_pendingOperation == "initialize") && accepted) {
             // 任务初始化：把地面站侧也恢复成"下一次任务开始前"的状态，
             // 起降点、目标点、上传标记全部作废，必须重新确认。
             m_uploaded = false;
             m_homeValid = false;
             m_hasTarget = false;
-            m_hoverSamples.clear();
             m_home = QVector3D();
             m_target = QVector3D();
             m_groundOrigin = QVector3D();
@@ -32,6 +31,7 @@ RoundTripMission::RoundTripMission(GroundLink *link, MappingClient *mapping, int
         m_status = accepted ? (m_pendingOperation == "upload"
             ? QStringLiteral("自动任务已上传；确认起降区域空旷后点击开始")
             : m_pendingOperation == "cancel" ? QStringLiteral("终止请求已接受，请检查悬停并人工接管")
+            : m_pendingOperation == "initialize" ? QStringLiteral("已按新围栏重启规划器，等待就绪后重新标定起降点")
             : m_pendingOperation == "clear" ? QStringLiteral("环境已初始化：请重新确认起降点，再选目标并上传")
             : QStringLiteral("开始请求已接受，等待机载执行状态")) : QStringLiteral("请求未确认：%1").arg(reason);
         m_pendingId.clear(); m_pendingOperation.clear();
@@ -40,9 +40,7 @@ RoundTripMission::RoundTripMission(GroundLink *link, MappingClient *mapping, int
     m_tick.setInterval(250);
     connect(&m_tick, &QTimer::timeout, this, [this] {
         if (contextReady() && m_link->mission().value("takeoff_ready").toBool() && !m_link->armed() && !active()) {
-            m_hoverSamples.append(QVector3D(m_link->worldX(), m_link->worldY(), m_link->worldZ()));
-            while (m_hoverSamples.size() > 8) m_hoverSamples.removeFirst();
-        } else m_hoverSamples.clear();
+        }
         update();
     });
     m_tick.start();
@@ -97,12 +95,8 @@ QString RoundTripMission::recordHint() const {
     if (!m_link->mission().value("takeoff_ready").toBool())
         return QStringLiteral("机载地面起飞前检查未通过");
     if (m_link->armed()) return QStringLiteral("飞控已解锁");
-    if (m_hoverSamples.size() < 8)
-        return QStringLiteral("静止采样中 %1/8（需连续 2 秒）").arg(m_hoverSamples.size());
-    for (const auto &p : m_hoverSamples)
-        if ((p - m_hoverSamples.last()).length() > .1f)
-            return QStringLiteral("位置仍在变化（超过 0.1 m）");
-    const auto ground = m_hoverSamples.last();
+    // 不再要求"静止 2 秒"：操作员确认后立即取当前位姿作起降点。
+    const auto ground = QVector3D(m_link->worldX(), m_link->worldY(), m_link->worldZ());
     const auto b = m_link->flightBounds();
     for (int i = 0; i < 3; ++i)
         if (ground[i] <= b[i].toDouble() || ground[i] >= b[i+3].toDouble())
@@ -115,9 +109,8 @@ QString RoundTripMission::recordHint() const {
 }
 bool RoundTripMission::canRecord() const {
     if (!contextReady() || !canEdit() || !m_link->mission().value("takeoff_ready").toBool() || m_link->armed()
-        || m_hoverSamples.size() < 8) return false;
-    for (const auto &p : m_hoverSamples) if ((p-m_hoverSamples.last()).length() > .1f) return false;
-    const auto ground = m_hoverSamples.last();
+) return false;
+    const auto ground = QVector3D(m_link->worldX(), m_link->worldY(), m_link->worldZ());
     const double h = m_link->mission().value("takeoff_height").toDouble();
     const auto b = m_link->flightBounds();
     for (int i=0; i<3; ++i) if (ground[i] <= b[i].toDouble() || ground[i] >= b[i+3].toDouble()) return false;
@@ -163,6 +156,26 @@ bool RoundTripMission::canClear() const {
     // 不在飞行中就应该可用，不再要求机载一定处于 READY/COMPLETED/FAILED。
     return !task.value("map_session_id").toString().isEmpty();
 }
+void RoundTripMission::initialize(const QVariantList &bounds, const QString &projectDir) {
+    if (!canClear() || bounds.size() != 6 || projectDir.trimmed().isEmpty()) return;
+    double fence[6];
+    for (int i = 0; i < 6; ++i) {
+        fence[i] = bounds.at(i).toDouble();
+        if (!std::isfinite(fence[i])) return;
+    }
+    if (!(fence[0] < fence[3] && fence[1] < fence[4] && fence[2] < fence[5])) {
+        m_status = QStringLiteral("围栏无效：每个轴必须 min < max"); emit changed(); return;
+    }
+    m_pendingOperation = "initialize";
+    const auto task = m_link->mission();
+    m_pendingId = m_link->sendCommand("clear", task.value("map_session_id").toString(), QString(), 0,
+                                      {}, {}, {{"bounds", bounds}, {"project_dir", projectDir}});
+    m_status = m_pendingId.isEmpty()
+        ? QStringLiteral("未能发送初始化请求")
+        : QStringLiteral("正在初始化：清理机载任务并按新围栏重启规划器…");
+    emit changed();
+}
+
 void RoundTripMission::clearMission() {
     if (!canClear()) return;
     m_pendingOperation = "clear";
@@ -175,9 +188,19 @@ void RoundTripMission::update() {
         || m_mapping->sessionId() != m_mapSession || m_link->mission().value("map_session_id") != m_taskSession
         || m_link->flightBounds() != m_fence)) {
         m_homeValid = m_hasTarget = m_uploaded = false;
-        m_hoverSamples.clear();
         m_status = QStringLiteral("连接、地图会话或围栏变化，旧标点已失效；不会自动重新执行任务");
     }
+    // 机载初始化是异步的：忙碌阶段持续刷新文案，就绪/失败只在跃变时提示一次，
+    // 避免把操作员后续看到的其它提示覆盖掉。
+    const QString phase = m_link->mission().value("init_phase").toString();
+    const QString detail = m_link->mission().value("init_detail").toString();
+    if (phase != m_lastInitPhase) {
+        m_lastInitPhase = phase;
+        if (phase == "ready") m_status = QStringLiteral("初始化完成：%1").arg(detail);
+        else if (phase == "failed") m_status = QStringLiteral("初始化失败：%1").arg(detail);
+    }
+    if (phase != "idle" && phase != "ready" && phase != "failed" && !detail.isEmpty())
+        m_status = QStringLiteral("初始化中：%1").arg(detail);
     emit changed();
 }
 void RoundTripMission::recordHome() {

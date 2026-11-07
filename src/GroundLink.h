@@ -38,7 +38,8 @@ public:
     double mapOdomStamp() const { return m_mapStamp; }
     QVariantList flightBounds() const { return m_bounds; }
     QString sendCommand(const QString &operation, const QString &session, const QString &mission,
-                        int revision, const QVariantList &waypoints = {}, const QVariantMap &automatic = {});
+                        int revision, const QVariantList &waypoints = {}, const QVariantMap &automatic = {},
+                                   const QVariantMap &fields = {});
     Q_INVOKABLE void queryMission();
     bool connected() const { return m_connected; }
     bool connecting() const { return m_connecting; }
