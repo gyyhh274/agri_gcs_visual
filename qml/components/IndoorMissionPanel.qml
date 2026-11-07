@@ -17,12 +17,24 @@ Rectangle {
             Text { text: "自动起降 · 单点往返"; color: "white"; font.pixelSize: 15; font.bold: true }
             Text { width: parent.width; text: control.mission.phase; color: "#82e8d1"; font.pixelSize: 13; wrapMode: Text.WordWrap }
             Text { width: parent.width; text: control.mission.readiness; color: control.mission.canRecord ? "#6fd9b9" : "#e8bb76"; font.pixelSize: 12; wrapMode: Text.WordWrap }
-            GButton { width: parent.width; height: 34; text: "① 确认当前位置为起降点"; enabled: control.mission.canRecord; onClicked: control.mission.recordHome() }
+            GButton { objectName: "roundTripInitializeButton"; width: parent.width; height: 34; text: "① 任务初始化…"; fill: "#2f6f8f"; enabled: control.mission.canInitialize; onClicked: cancelDialog.open() }
+            GButton {
+                objectName: "roundTripPickTargetButton"; width: parent.width; height: 34
+                text: control.selectingTarget ? "② 选点中，点击地图范围内" : "② 选择目标点"
+                checked: control.selectingTarget
+                enabled: control.mission.homeValid ? control.mission.contextReady && control.mission.canEdit : control.mission.canRecord
+                onClicked: {
+                    if (control.mission.homeValid) control.selectTarget()
+                    else homeDialog.open()
+                }
+            }
+            GButton { objectName: "roundTripUploadButton"; width: parent.width; height: 34; text: "③ 上传任务"; enabled: control.mission.canUpload && isFinite(Number(hoverField.text)) && Number(hoverField.text) >= 0 && Number(hoverField.text) <= 60; onClicked: control.mission.upload(Number(hoverField.text)) }
+            GButton { objectName: "roundTripStartButton"; width: parent.width; height: 34; text: "④ 执行飞行任务…"; fill: "#116282"; enabled: control.mission.canStart; onClicked: startDialog.open() }
             Text {
                 width: parent.width
                 visible: !control.mission.canRecord && !control.mission.homeValid
                          && control.mission.recordHint.length > 0
-                text: "未能标点：" + control.mission.recordHint
+                text: "未能选点：" + control.mission.recordHint
                 color: "#e8bb76"; font.pixelSize: 11; wrapMode: Text.WordWrap
             }
             Text { width: parent.width; text: control.mission.homeValid ? "起降点: " + control.mission.groundOrigin.x.toFixed(2) + ", " + control.mission.groundOrigin.y.toFixed(2) + ", " + control.mission.groundOrigin.z.toFixed(2) + " m\n自动起飞上升 " + (control.mission.home.z-control.mission.groundOrigin.z).toFixed(2) + " m，返航高度 Z=" + control.mission.home.z.toFixed(2) : "在地面保持静止、飞控未解锁，确认本次起降位置。"; color: "#b7cedb"; font.pixelSize: 12; wrapMode: Text.WordWrap }
@@ -32,7 +44,6 @@ Rectangle {
                 TextField { id: heightField; width: 88; height: 32; text: control.mission.height.toFixed(2); color: "#dce9f7"; font.pixelSize: 13; background: Rectangle { color: "#061522"; radius: 4; border.color: "#16405e" } enabled: control.mission.homeValid && control.mission.canEdit; onEditingFinished: control.mission.setHeight(Number(text)) }
                 Text { text: "m · world"; color: "#9dbac8"; anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 11 }
             }
-            GButton { objectName: "roundTripPickTargetButton"; width: parent.width; height: 34; text: control.selectingTarget ? "② 选点中，点击地图范围内" : "② 俯视图选择目标 P"; checked: control.selectingTarget; enabled: control.mission.homeValid && control.mission.contextReady && control.mission.canEdit; onClicked: control.selectTarget() }
             Row {
                 width: parent.width; spacing: 6
                 TextField { id: targetXField; width: (parent.width-92)/2; height: 32; placeholderText: "目标 X"; color: "#dce9f7"; font.pixelSize: 12; selectByMouse: true; enabled: control.mission.homeValid && control.mission.canEdit; background: Rectangle { color: "#061522"; radius: 4; border.color: "#16405e" } }
@@ -47,12 +58,9 @@ Rectangle {
                 Text { text: "秒 · 0–60"; color: "#9dbac8"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
             }
             Text { width: parent.width; text: "任务：自动起飞 → 前往 P → 悬停 → 返回起飞点 → 自动降落并锁定电机\n图上连线为参考，不代表实际避障轨迹。"; color: "#a9c3d0"; font.pixelSize: 12; wrapMode: Text.WordWrap }
-            GButton { width: parent.width; height: 34; text: "③ 上传自动往返任务"; enabled: control.mission.canUpload && isFinite(Number(hoverField.text)) && Number(hoverField.text) >= 0 && Number(hoverField.text) <= 60; onClicked: control.mission.upload(Number(hoverField.text)) }
-            GButton { objectName: "roundTripStartButton"; width: parent.width; height: 34; text: "④ 自动起飞并执行…"; fill: "#116282"; enabled: control.mission.canStart; onClicked: startDialog.open() }
             Row {
                 spacing: 8
                 GButton { width: 124; height: 32; text: "查询任务状态"; enabled: groundLink.connected && !groundLink.busy; onClicked: groundLink.queryMission() }
-                GButton { width: 124; height: 32; text: "任务初始化…"; fill: "#2f6f8f"; enabled: control.mission.canInitialize; onClicked: cancelDialog.open() }
             }
             Text { width: parent.width; text: control.mission.status; color: "#ecce9a"; font.pixelSize: 12; wrapMode: Text.WordWrap }
         }
@@ -62,6 +70,32 @@ Rectangle {
         function onChanged() {
             if (!heightField.activeFocus) heightField.text = control.mission.height.toFixed(2)
             if (!control.mission.homeValid) { targetXField.clear(); targetYField.clear() }
+        }
+    }
+    Dialog {
+        id: homeDialog
+        objectName: "roundTripHomeDialog"
+        parent: Overlay.overlay; width: 410; height: 250
+        x: (parent.width-width)/2; y: (parent.height-height)/2; modal: true
+        background: Rectangle { color: "#0a2234"; border.color: "#28617b"; radius: 6 }
+        contentItem: Column {
+            spacing: 16
+            Text { text: "确认本次起降点"; color: "white"; font.pixelSize: 18 }
+            Text { width: parent.width; text: "将当前位置设为起降点，选点后飞机会返回此处降落。请确认飞机在地面、飞控未解锁，且起降区域空旷。"; color: "#cfe0ef"; font.pixelSize: 13; wrapMode: Text.WordWrap }
+            Text { width: parent.width; text: "当前位置：(" + groundLink.worldX.toFixed(2) + ", " + groundLink.worldY.toFixed(2) + ", " + groundLink.worldZ.toFixed(2) + ") m · world"; color: "#8fb6cc"; font.pixelSize: 12; wrapMode: Text.WordWrap }
+            Row {
+                spacing: 12
+                GButton {
+                    objectName: "roundTripConfirmHomeButton"; width: 180; height: 35; text: "确认起降点并选目标"
+                    enabled: control.mission.canRecord
+                    onClicked: {
+                        if (!control.mission.canRecord) return
+                        control.mission.recordHome()
+                        if (control.mission.homeValid) { homeDialog.close(); control.selectTarget() }
+                    }
+                }
+                GButton { width: 100; height: 35; text: "取消"; onClicked: homeDialog.close() }
+            }
         }
     }
     Dialog {

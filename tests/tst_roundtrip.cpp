@@ -117,7 +117,6 @@ private slots:
         ticker.start(50);
         QTRY_VERIFY_WITH_TIMEOUT(mission.canRecord(),4000);
         QVERIFY(commands.isEmpty()); QVERIFY(!mission.canStart());
-        mission.recordHome();
         {
             // Exercise the actual QML click handler with isolated map/task peers.
             // A rejected click must not consume selection or send a task command.
@@ -139,14 +138,22 @@ private slots:
             QVERIFY(QTest::qWaitForWindowExposed(&window));
             auto *cloud = panel->findChild<PointCloudView *>("pointCloudView");
             QVERIFY(cloud);
-            QObject *pickButton = nullptr;
-            for (auto *object : panel->findChildren<QObject *>()) {
-                if (object->property("text").toString().contains(QStringLiteral("俯视图选择目标"))) {
-                    pickButton = object; break;
-                }
-            }
-            QVERIFY(pickButton);
+            auto *initButton = panel->findChild<QQuickItem *>("roundTripInitializeButton");
+            auto *pickButton = panel->findChild<QQuickItem *>("roundTripPickTargetButton");
+            auto *uploadButton = panel->findChild<QQuickItem *>("roundTripUploadButton");
+            auto *startButton = panel->findChild<QQuickItem *>("roundTripStartButton");
+            QVERIFY(initButton && pickButton && uploadButton && startButton);
+            QVERIFY(initButton->y() < pickButton->y());
+            QVERIFY(pickButton->y() < uploadButton->y());
+            QVERIFY(uploadButton->y() < startButton->y());
+            QVERIFY(!mission.homeValid());
             QVERIFY(QMetaObject::invokeMethod(pickButton,"clicked"));
+            QVERIFY(!mission.homeValid());
+            QVERIFY(!panel->property("selectingTarget").toBool());
+            auto *confirmHome = panel->findChild<QObject *>("roundTripConfirmHomeButton");
+            QVERIFY(confirmHome);
+            QVERIFY(QMetaObject::invokeMethod(confirmHome,"clicked"));
+            QVERIFY(mission.homeValid());
             QVERIFY(panel->property("selectingTarget").toBool());
             QVERIFY(cloud->topDown());
             QCoreApplication::processEvents();
