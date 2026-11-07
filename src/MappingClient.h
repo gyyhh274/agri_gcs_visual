@@ -41,6 +41,7 @@ class MappingClient : public QObject {
     Q_PROPERTY(int pointCount READ pointCount NOTIFY changed)
     Q_PROPERTY(int trajectoryCount READ trajectoryCount NOTIFY changed)
     Q_PROPERTY(bool hasPose READ hasPose NOTIFY changed)
+    Q_PROPERTY(bool poseChannelActive READ poseChannelActive NOTIFY changed)
     Q_PROPERTY(float positionX READ positionX NOTIFY changed)
     Q_PROPERTY(float positionY READ positionY NOTIFY changed)
     Q_PROPERTY(float positionZ READ positionZ NOTIFY changed)
@@ -63,6 +64,7 @@ public:
     int pointCount() const { return m_points.size(); }
     int trajectoryCount() const { return m_trajectory.size(); }
     bool hasPose() const { return m_poseFresh; }
+    bool poseChannelActive() const { return m_poseChannelActive && m_poseSession == m_session && m_poseFrame == m_frameId; }
     float positionX() const { return m_position.x(); }
     float positionY() const { return m_position.y(); }
     float positionZ() const { return m_position.z(); }
@@ -89,6 +91,9 @@ signals:
 
 private:
     void connectSocket();
+    void connectPoseSocket();
+    void readPoseSocket();
+    bool applyPose(const QJsonObject &header);
     void readSocket();
     void processInput();
     void protocolError(const QString &message);
@@ -103,8 +108,8 @@ private:
     void setStatus(const QString &status);
     static MappingVoxelKey voxelKey(const MapPoint &point);
 
-    QTcpSocket m_socket;
-    QTimer m_reconnectTimer, m_snapshotTimer, m_staleTimer, m_processTimer, m_demoTimer;
+    QTcpSocket m_socket, m_poseSocket;
+    QTimer m_reconnectTimer, m_poseReconnectTimer, m_snapshotTimer, m_staleTimer, m_processTimer, m_demoTimer;
     QElapsedTimer m_clock;
     QString m_host, m_status, m_session, m_frameId, m_lastExportPath;
     int m_port = 37262;
@@ -115,7 +120,10 @@ private:
     bool m_haveSequence = false;
     quint64 m_lastSequence = 0, m_revision = 0;
     qint64 m_lastDataMs = -1, m_lastPoseMs = -1, m_discardThroughBytes = 0;
-    QByteArray m_input;
+    QByteArray m_input, m_poseInput;
+    bool m_poseChannelActive = false, m_poseHaveSequence = false;
+    quint64 m_poseSequence = 0;
+    QString m_poseSession, m_poseFrame;
     QJsonObject m_cloudHeader;
     QByteArray m_cloudPayload;
     QVector<MapPoint> m_cloudPoints;

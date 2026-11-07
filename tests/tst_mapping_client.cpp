@@ -42,6 +42,7 @@ private slots:
     void fragmentedFramesAndOriginReset();
     void invalidLengthsAndNonFinite();
     void stalePoseAndPause();
+    void independentPoseBypassesCloudAndChecksSession();
     void boundedMapAndExport();
     void mapCapacityAndReconnect();
     void clearAndResumeDiscardPartialFrames();
@@ -134,6 +135,52 @@ void MappingClientTest::stalePoseAndPause() {
     QTest::qWait(3300); QTRY_VERIFY(client.stale()); QTRY_VERIFY(!client.hasPose());
     client.setEnabled(false);
 }
+void MappingClientTest::independentPoseBypassesCloudAndChecksSession() {
+    QTcpServer mapServer, poseServer;
+    for (int tries = 0; tries < 40; ++tries) {
+        QVERIFY(mapServer.listen(QHostAddress::LocalHost));
+        if (mapServer.serverPort() < 65534 && poseServer.listen(QHostAddress::LocalHost, mapServer.serverPort()+2)) break;
+        mapServer.close();
+    }
+    QVERIFY(mapServer.isListening() && poseServer.isListening());
+    MappingClient client; client.setHost("127.0.0.1"); client.setPort(mapServer.serverPort()); client.setEnabled(true);
+    QTRY_VERIFY(mapServer.hasPendingConnections() && poseServer.hasPendingConnections());
+    auto *mapPeer = mapServer.nextPendingConnection(); auto *posePeer = poseServer.nextPendingConnection();
+    mapPeer->write(packet({{"type","hello"},{"seq",1}}));
+    mapPeer->write(packet({{"type","cloud"},{"seq",2},{"point_count",1}},cloud(1)));
+    QTRY_VERIFY(client.connected() && !client.stale() && client.sessionId() == "test-session");
+    posePeer->write(packet({{"type","hello"},{"seq",3},{"pose_only",true}}));
+    QTRY_VERIFY(client.poseChannelActive());
+    // 模拟点云 TCP 帧尚未传完：轻量通道仍能立即更新位姿。
+    QByteArray large; for (int i=0;i<10000;++i) large.append(cloud(float(i+2)));
+    const QByteArray delayed = packet({{"type","cloud"},{"seq",4},{"point_count",10000}},large);
+    mapPeer->write(delayed.left(1024)); mapPeer->flush();
+    posePeer->write(packet({{"type","pose"},{"seq",5},{"stamp",10.},{"position",QJsonArray{2,3,4}},
+                            {"orientation",QJsonArray{0,0,0,1}}}));
+    QTRY_COMPARE(client.poseStamp(),10.);
+    QCOMPARE(client.positionX(),2.f); QVERIFY(client.hasPose());
+    mapPeer->write(delayed.mid(1024));
+    mapPeer->write(packet({{"type","pose"},{"seq",6},{"stamp",9.},{"position",QJsonArray{99,0,0}},
+                           {"orientation",QJsonArray{0,0,0,1}}}));
+    QTRY_COMPARE_WITH_TIMEOUT(client.pointCount(),10001,5000);
+    QCOMPARE(client.poseStamp(),10.); QCOMPARE(client.positionX(),2.f);
+    // 位姿和地图会话不匹配时，不能把新位姿当成旧地图的位置。
+    posePeer->write(packet({{"type","reset"},{"session","new-session"},{"seq",0}}));
+    posePeer->write(packet({{"type","pose"},{"session","new-session"},{"seq",1},{"stamp",11.},
+                            {"position",QJsonArray{5,0,0}},{"orientation",QJsonArray{0,0,0,1}}}));
+    QTRY_VERIFY(!client.hasPose()); QVERIFY(!client.poseChannelActive());
+    mapPeer->write(packet({{"type","reset"},{"session","new-session"},{"seq",0}}));
+    QTRY_COMPARE(client.sessionId(),QString("new-session"));
+    posePeer->write(packet({{"type","pose"},{"session","new-session"},{"seq",2},{"stamp",12.},
+                            {"position",QJsonArray{6,0,0}},{"orientation",QJsonArray{0,0,0,1}}}));
+    QTRY_COMPARE(client.positionX(),6.f); QVERIFY(client.poseChannelActive());
+    posePeer->disconnectFromHost(); QTRY_VERIFY(!client.poseChannelActive()); QTRY_VERIFY(!client.hasPose());
+    mapPeer->write(packet({{"type","pose"},{"session","new-session"},{"seq",1},{"stamp",13.},
+                           {"position",QJsonArray{7,0,0}},{"orientation",QJsonArray{0,0,0,1}}}));
+    QTRY_COMPARE(client.positionX(),7.f); QVERIFY(client.hasPose()); // 旧桥兼容回退。
+    client.setEnabled(false);
+}
+
 void MappingClientTest::boundedMapAndExport() {
     MappingClient client;
     client.startDemo(); QTRY_VERIFY(client.pointCount() > 1000); QVERIFY(client.demo());

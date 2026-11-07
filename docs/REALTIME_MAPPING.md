@@ -61,7 +61,7 @@ agri-onboard-pointcloud ssh-ed25519 <已核验的机载主机公钥>
 在机载用户 `~/.ssh/authorized_keys` 为该隧道公钥添加限制：
 
 ```text
-no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,permitopen="127.0.0.1:37262",command="/bin/false" ssh-ed25519 <隧道公钥>
+no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,permitopen="127.0.0.1:37262",permitopen="127.0.0.1:37263",permitopen="127.0.0.1:37264",command="/bin/false" ssh-ed25519 <隧道公钥>
 ```
 
 启用：
@@ -141,3 +141,6 @@ python3 tools/check_mapping_stream.py --seconds 5
 2026-10-15 验证范围：虚拟机实际桌面三维合成演示和相机图传同时显示；Jetson 正式只读服务经 SSH 隧道返回等待状态；Jetson 独立 ROS master（11321）上的合成标准 ROS 点云/位姿通过桥接器（37263），验证了 900 点快照、增量更新和停止源后的过期快照。该 ROS 测试未启动飞行栈，也不是 MID-360 实景验收。测试工具 `publish_mapping_fixture.py` 强制使用非生产端口的本机 ROS master。
 
 真实机载验收需在操作者自行启动建图后确认：点云与位姿均来自上述话题；地面站显示正确环境和轨迹；断网与重连能够恢复快照；图传与云台仍正常。机载 master 未运行时仅能验证等待状态与连接通路。
+
+
+实时位姿使用独立的只读 TCP 通道，默认机载和本机都是 `127.0.0.1:37264`，不发送点云快照。位姿与点云共用地图会话标识；会话不匹配时地面站不使用该位姿。SSH 隧道需允许转发 37264，旧桥接器未启用此通道时地面站回退到原有点云连接中的位姿。

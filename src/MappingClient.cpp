@@ -42,11 +42,27 @@ MappingClient::MappingClient(QObject *parent) : QObject(parent) {
     m_socket.setReadBufferSize(MaxBuffer);
     m_reconnectTimer.setSingleShot(true);
     m_reconnectTimer.setInterval(2000);
+    m_poseReconnectTimer.setSingleShot(true);
+    m_poseReconnectTimer.setInterval(2000);
+    m_poseSocket.setReadBufferSize(65536);
     m_processTimer.setSingleShot(true);
     m_snapshotTimer.setInterval(100);
     m_staleTimer.setInterval(250);
     m_demoTimer.setInterval(100);
     connect(&m_reconnectTimer, &QTimer::timeout, this, &MappingClient::connectSocket);
+    connect(&m_poseReconnectTimer, &QTimer::timeout, this, &MappingClient::connectPoseSocket);
+    connect(&m_poseSocket, &QTcpSocket::readyRead, this, &MappingClient::readPoseSocket);
+    connect(&m_poseSocket, &QTcpSocket::disconnected, this, [this] {
+        const bool wasActive = m_poseChannelActive;
+        m_poseChannelActive = false; m_poseHaveSequence = false;
+        m_poseInput.clear(); m_poseSession.clear(); m_poseFrame.clear();
+        if (wasActive) { m_poseFresh = false; m_lastPoseMs = -1; m_dirty = true; emit changed(); }
+        if (m_enabled && m_connected && !m_demoTimer.isActive()) m_poseReconnectTimer.start();
+    });
+    connect(&m_poseSocket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred), this,
+            [this](QAbstractSocket::SocketError) {
+        if (m_enabled && m_connected && !m_demoTimer.isActive()) m_poseReconnectTimer.start();
+    });
     connect(&m_processTimer, &QTimer::timeout, this, &MappingClient::processInput);
     connect(&m_snapshotTimer, &QTimer::timeout, this, &MappingClient::publishSnapshot);
     connect(&m_staleTimer, &QTimer::timeout, this, &MappingClient::checkFreshness);
@@ -54,11 +70,13 @@ MappingClient::MappingClient(QObject *parent) : QObject(parent) {
     connect(&m_socket, &QTcpSocket::readyRead, this, &MappingClient::readSocket);
     connect(&m_socket, &QTcpSocket::connected, this, [this] {
         m_connected = true;
+        connectPoseSocket();
         setStatus(QStringLiteral("已连接，等待建图数据"));
         emit changed();
     });
     connect(&m_socket, &QTcpSocket::disconnected, this, [this] {
         m_connected = false;
+        m_poseReconnectTimer.stop(); m_poseSocket.abort();
         m_stale = true;
         m_poseFresh = false;
         m_dirty = true;
@@ -92,9 +110,10 @@ MappingClient::~MappingClient() {
     // QTcpSocket can emit disconnected from its destructor, after later members
     // have already died. Disconnect callbacks while all state is still alive.
     QObject::disconnect(&m_socket, nullptr, this, nullptr);
-    m_reconnectTimer.stop(); m_snapshotTimer.stop(); m_staleTimer.stop();
+    QObject::disconnect(&m_poseSocket, nullptr, this, nullptr);
+    m_reconnectTimer.stop(); m_poseReconnectTimer.stop(); m_snapshotTimer.stop(); m_staleTimer.stop();
     m_processTimer.stop(); m_demoTimer.stop();
-    m_socket.abort();
+    m_socket.abort(); m_poseSocket.abort();
 }
 
 void MappingClient::setStatus(const QString &value) {
@@ -108,8 +127,8 @@ void MappingClient::setEnabled(bool value) {
     m_enabled = value;
     if (value) connectSocket();
     else {
-        m_reconnectTimer.stop();
-        m_socket.abort();
+        m_reconnectTimer.stop(); m_poseReconnectTimer.stop();
+        m_socket.abort(); m_poseSocket.abort();
         m_connected = false;
         m_poseFresh = false;
         m_stale = true;
@@ -154,9 +173,9 @@ void MappingClient::reconnect() {
 }
 void MappingClient::connectSocket() {
     if (!m_enabled || m_demoTimer.isActive()) return;
-    m_reconnectTimer.stop();
-    m_socket.abort();
-    m_reconnectTimer.stop();
+    m_reconnectTimer.stop(); m_poseReconnectTimer.stop();
+    m_socket.abort(); m_poseSocket.abort();
+    m_reconnectTimer.stop(); m_poseReconnectTimer.stop();
     m_input.clear();
     m_cloudPayload.clear();
     m_cloudPoints.clear();
@@ -166,6 +185,67 @@ void MappingClient::connectSocket() {
     setStatus(QStringLiteral("正在连接 %1:%2").arg(m_host).arg(m_port));
     m_socket.connectToHost(m_host, quint16(m_port));
 }
+void MappingClient::connectPoseSocket() {
+    if (!m_enabled || !m_connected || m_demoTimer.isActive() || m_port > 65533) return;
+    m_poseReconnectTimer.stop();
+    if (m_poseSocket.state() == QAbstractSocket::ConnectedState) return;
+    if (m_poseSocket.state() != QAbstractSocket::UnconnectedState) {
+        m_poseReconnectTimer.start();
+        return;
+    }
+    m_poseInput.clear(); m_poseChannelActive = false; m_poseHaveSequence = false;
+    m_poseSession.clear(); m_poseFrame.clear();
+    m_poseSocket.connectToHost(m_host, quint16(m_port + 2));
+}
+
+void MappingClient::readPoseSocket() {
+    m_poseInput.append(m_poseSocket.readAll());
+    if (m_poseInput.size() > 65536) { m_poseSocket.abort(); return; }
+    while (m_poseInput.size() >= 12) {
+        if (m_poseInput.left(4) != "AGM1") { m_poseSocket.abort(); return; }
+        const quint32 h = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(m_poseInput.constData() + 4));
+        const quint32 p = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(m_poseInput.constData() + 8));
+        if (!h || h > MaxHeader || p != 0) { m_poseSocket.abort(); return; }
+        const int total = 12 + int(h);
+        if (m_poseInput.size() < total) return;
+        QJsonParseError error;
+        const auto doc = QJsonDocument::fromJson(m_poseInput.mid(12, int(h)), &error);
+        m_poseInput.remove(0, total);
+        if (error.error != QJsonParseError::NoError || !doc.isObject()) { m_poseSocket.abort(); return; }
+        const auto header = doc.object();
+        const QString type = header.value("type").toString();
+        const QString session = header.value("session").toString();
+        const QString frame = header.value("frame").toString();
+        const auto rawSeq = header.value("seq");
+        const double seq = rawSeq.toDouble(-1);
+        if (header.value("protocol").toInt(-1) != 1 || session.isEmpty() || session.size() > 128 ||
+            frame.isEmpty() || frame.size() > 128 || !rawSeq.isDouble() || !std::isfinite(seq) ||
+            seq < 0 || seq > 9007199254740991.0 || std::floor(seq) != seq ||
+            !finiteNumber(header.value("stamp"), 1e12) ||
+            (header.contains("demo") && !header.value("demo").isBool()) ||
+            (type != "hello" && type != "pose" && type != "reset")) { m_poseSocket.abort(); return; }
+        if (!m_poseChannelActive) {
+            if (type != "hello" || !header.value("pose_only").toBool()) { m_poseSocket.abort(); return; }
+            m_poseChannelActive = true; m_poseFresh = false; m_lastPoseMs = -1;
+            m_poseSession = session; m_poseFrame = frame; m_poseHaveSequence = false;
+            m_dirty = true; emit changed();
+        } else if (session != m_poseSession || frame != m_poseFrame) {
+            if (type != "reset") { m_poseSocket.abort(); return; }
+            m_poseSession = session; m_poseFrame = frame; m_poseHaveSequence = false;
+            m_poseFresh = false; m_lastPoseMs = -1; m_dirty = true; emit changed();
+        }
+        if (m_poseHaveSequence && quint64(seq) <= m_poseSequence) { m_poseSocket.abort(); return; }
+        m_poseHaveSequence = true; m_poseSequence = quint64(seq);
+        if (type == "reset") { m_poseFresh = false; m_lastPoseMs = -1; m_dirty = true; emit changed(); }
+        if (type == "pose" && m_connected && !m_paused && !m_demo &&
+            m_poseSession == m_session && m_poseFrame == m_frameId &&
+            header.value("demo").toBool(false) == m_demo) {
+            if (m_poseFresh && header.value("stamp").toDouble() < m_poseStamp) continue;
+            if (!applyPose(header)) { m_poseSocket.abort(); return; }
+        }
+    }
+}
+
 void MappingClient::resetData() {
     m_poseStamp = 0;
     m_points.clear(); m_voxels.clear(); m_trajectory.clear();
@@ -301,24 +381,8 @@ bool MappingClient::handleFrame(const QJsonObject &header, const QByteArray &pay
         return true;
     }
     if (type == "pose") {
-        const auto p = header.value("position").toArray();
-        const auto q = header.value("orientation").toArray();
-        if (p.size() != 3 || q.size() != 4) { protocolError(QStringLiteral("无效位姿维度")); return false; }
-        for (const auto &value : p) if (!finiteNumber(value)) { protocolError(QStringLiteral("无效位置数值")); return false; }
-        for (const auto &value : q) if (!finiteNumber(value, 2.0)) { protocolError(QStringLiteral("无效姿态数值")); return false; }
-        QQuaternion orientation(float(q.at(3).toDouble()), float(q.at(0).toDouble()), float(q.at(1).toDouble()), float(q.at(2).toDouble()));
-        if (orientation.lengthSquared() < 1e-8f) { protocolError(QStringLiteral("零长度四元数")); return false; }
-        if (m_paused) return true;
-        m_position = QVector3D(float(p.at(0).toDouble()), float(p.at(1).toDouble()), float(p.at(2).toDouble()));
-        m_orientation = orientation.normalized();
-        m_poseStamp = header.value("stamp").toDouble();
-        m_lastPoseMs = m_clock.elapsed();
-        m_poseFresh = true;
-        if (m_trajectory.isEmpty() || (m_trajectory.last() - m_position).lengthSquared() >= 0.01f) {
-            if (m_trajectory.size() >= 10000) m_trajectory.remove(0, 1000);
-            m_trajectory.append(m_position);
-        }
-        m_dirty = true;
+        if (m_poseChannelActive) return true;
+        if (!applyPose(header)) { protocolError(QStringLiteral("无效位姿数据")); return false; }
         return true;
     }
     const auto countValue = header.value("point_count");
@@ -340,6 +404,28 @@ bool MappingClient::handleFrame(const QJsonObject &header, const QByteArray &pay
     m_cloudOffset = 0;
     m_cloudApplyOffset = -1;
     return true;
+}
+
+bool MappingClient::applyPose(const QJsonObject &header) {
+        const auto p = header.value("position").toArray();
+        const auto q = header.value("orientation").toArray();
+        if (p.size() != 3 || q.size() != 4) { return false; }
+        for (const auto &value : p) if (!finiteNumber(value)) { return false; }
+        for (const auto &value : q) if (!finiteNumber(value, 2.0)) { return false; }
+        QQuaternion orientation(float(q.at(3).toDouble()), float(q.at(0).toDouble()), float(q.at(1).toDouble()), float(q.at(2).toDouble()));
+        if (orientation.lengthSquared() < 1e-8f) { return false; }
+        if (m_paused) return true;
+        m_position = QVector3D(float(p.at(0).toDouble()), float(p.at(1).toDouble()), float(p.at(2).toDouble()));
+        m_orientation = orientation.normalized();
+        m_poseStamp = header.value("stamp").toDouble();
+        m_lastPoseMs = m_clock.elapsed();
+        m_poseFresh = true;
+        if (m_trajectory.isEmpty() || (m_trajectory.last() - m_position).lengthSquared() >= 0.01f) {
+            if (m_trajectory.size() >= 10000) m_trajectory.remove(0, 1000);
+            m_trajectory.append(m_position);
+        }
+        m_dirty = true;
+        return true;
 }
 
 void MappingClient::processCloud() {
@@ -448,7 +534,8 @@ void MappingClient::savePcd(const QUrl &url) {
 }
 
 void MappingClient::startDemo() {
-    m_enabled = false; m_reconnectTimer.stop(); m_socket.abort(); m_reconnectTimer.stop();
+    m_enabled = false; m_reconnectTimer.stop(); m_poseReconnectTimer.stop();
+    m_socket.abort(); m_poseSocket.abort(); m_reconnectTimer.stop(); m_poseReconnectTimer.stop();
     m_input.clear(); m_cloudPayload.clear(); m_cloudPoints.clear(); m_cloudApplyOffset = -1;
     m_demo = true; m_connected = false; m_paused = false;
     m_session = "local-synthetic-demo"; m_frameId = "demo_world";

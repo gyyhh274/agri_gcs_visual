@@ -117,6 +117,7 @@ class MapBridge:
         self.demo = demo
         self.points = OrderedDict()
         self.clients = []
+        self.pose_clients = []
         self.session = str(uuid.uuid4())
         self.sequence = 0
         self.frame = "world"
@@ -136,10 +137,12 @@ class MapBridge:
         header.update(fields)
         return encode_frame(header, payload)
 
-    def _broadcast(self, packet):
-        # 只保护客户端列表本身；调用方可能持有也可能不持有 self.lock。
+    def _broadcast(self, packet, include_pose_clients=False):
+        # 点云不进入位姿队列，重置和位姿同时发到两个独立连接。
         with self.clients_lock:
             self.clients = [peer for peer in self.clients if peer.offer(packet)]
+            if include_pose_clients:
+                self.pose_clients = [peer for peer in self.pose_clients if peer.offer(packet)]
 
     def _send(self, kind, payload=b"", **fields):
         # 序号分配与入队使用同一把锁，保证各客户端收到的帧顺序一致。
@@ -156,7 +159,7 @@ class MapBridge:
             self.last_pose_time = None
             self.last_stamp = None
             self.last_cloud_time = None
-            self._broadcast(self._packet("reset", reason=reason))
+            self._broadcast(self._packet("reset", reason=reason), include_pose_clients=True)
 
     def set_ros(self, ready, message):
         with self.lock:
@@ -228,6 +231,25 @@ class MapBridge:
                     self.clients.append(peer)
                 return True
 
+    def add_pose_peer(self, peer):
+        # 不读取地图锁或生成快照；所有包与地图通道共享 session 和有序序号。
+        with self.send_lock:
+            with self.clients_lock:
+                self.pose_clients = [item for item in self.pose_clients if not item.closed]
+                if len(self.pose_clients) >= self.maximum_clients:
+                    peer.close()
+                    return False
+            packets = [self._packet("hello", pose_only=True)]
+            if self.pose and self.last_pose_time is not None and self.clock() - self.last_pose_time <= 3:
+                packets.append(self._packet("pose", **self.pose))
+            for packet in packets:
+                if not peer.offer(packet):
+                    peer.close()
+                    return False
+            with self.clients_lock:
+                self.pose_clients.append(peer)
+            return True
+
     @staticmethod
     def _payload(points):
         return b"".join(POINT.pack(*point) for point in points)
@@ -280,18 +302,19 @@ class MapBridge:
                 return False
             self.pose = dict(position=list(position), orientation=[value / norm for value in orientation], stamp=stamp)
             self.last_pose_time = self.clock()
-            self._broadcast(self._packet("pose", **self.pose))
+            self._broadcast(self._packet("pose", **self.pose), include_pose_clients=True)
             return True
 
     def close(self):
         with self.lock:
             with self.clients_lock:
-                for peer in self.clients:
+                for peer in self.clients + self.pose_clients:
                     peer.close()
                 self.clients.clear()
+                self.pose_clients.clear()
 
 
-def serve(bridge, listener, stop):
+def serve(bridge, listener, stop, pose_only=False):
     listener.settimeout(0.5)
     while not stop.is_set():
         try:
@@ -303,8 +326,8 @@ def serve(bridge, listener, stop):
         connection.settimeout(3)
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         peer = Peer(connection)
-        if bridge.add_peer(peer):
-            threading.Thread(target=peer.run, daemon=True, name="mapping-client").start()
+        if (bridge.add_pose_peer(peer) if pose_only else bridge.add_peer(peer)):
+            threading.Thread(target=peer.run, daemon=True, name="mapping-pose-client" if pose_only else "mapping-client").start()
 
 
 def sampled_cloud(message, maximum=20000):
@@ -540,13 +563,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=37262)
+    parser.add_argument("--pose-port", type=int, default=None, help="independent pose port (default: map port + 2)")
     parser.add_argument("--max-hz", type=float, default=5.0)
     parser.add_argument('--cloud-source', choices=('body', 'world'), default='body',
                         help='body preserves undistorted scan detail using synchronized LIO poses')
     parser.add_argument("--demo", action="store_true", help="Explicit synthetic scene; never uses ROS")
     args = parser.parse_args()
-    if not 1 <= args.port <= 65535 or not 0.5 <= args.max_hz <= 10:
-        parser.error("port must be 1..65535 and max-hz must be 0.5..10")
+    if args.pose_port is None:
+        args.pose_port = args.port + 2
+    if (not 1 <= args.port <= 65535 or not 1 <= args.pose_port <= 65535
+            or args.pose_port == args.port or not 0.5 <= args.max_hz <= 10):
+        parser.error("map/pose ports must be distinct and in 1..65535; max-hz must be 0.5..10")
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
@@ -559,6 +586,17 @@ def main():
               "SYNTHETIC DEMO" if args.demo else "read-only ROS; waiting for source"), flush=True)
         threading.Thread(target=serve, args=(bridge, listener, stop), daemon=True,
                          name="mapping-server").start()
+        pose_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        pose_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            pose_listener.bind((args.bind, args.pose_port))
+            pose_listener.listen(4)
+            threading.Thread(target=serve, args=(bridge, pose_listener, stop, True), daemon=True,
+                             name="mapping-pose-server").start()
+            print("mapping pose bridge listening on {}:{}".format(args.bind, args.pose_port), flush=True)
+        except OSError as error:
+            pose_listener.close()
+            print("mapping pose bridge unavailable: {}; using legacy map pose stream".format(error), flush=True)
         worker = demo_worker if args.demo else ros_worker
         arguments = (bridge, stop) if args.demo else (bridge, stop, args.max_hz, args.cloud_source)
         threading.Thread(target=worker, args=arguments, daemon=True,
@@ -568,6 +606,7 @@ def main():
                 bridge.heartbeat()
         finally:
             stop.set()
+            pose_listener.close()
             bridge.close()
 
 

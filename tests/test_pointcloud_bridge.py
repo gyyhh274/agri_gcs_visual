@@ -1,5 +1,9 @@
 import importlib.util
 import math
+import socket
+import subprocess
+import sys
+import time
 from pathlib import Path
 import struct
 import threading
@@ -54,6 +58,48 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(struct.unpack("<ffff", result[0][1]), (1.25, -2, 3, 255))
         self.assertEqual(len(decoder.feed(packet + packet)), 2)
 
+    def test_real_listeners_keep_pose_separate_from_cloud(self):
+        # 独立 demo 进程，只使用本地临时端口，不连接 ROS 或飞控。
+        for _ in range(40):
+            probe = socket.socket(); probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
+            other = socket.socket()
+            try:
+                if port > 65533: continue
+                other.bind(('127.0.0.1', port+2)); break
+            except OSError: pass
+            finally: probe.close(); other.close()
+        else: self.fail('no adjacent local test ports')
+        path = str(Path(__file__).resolve().parents[1] / 'deploy/pointcloud_bridge.py')
+        child = subprocess.Popen([sys.executable, path, '--demo', '--port', str(port)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        connections = []
+        try:
+            deadline = time.monotonic() + 8
+            for target in (port, port+2):
+                while True:
+                    try:
+                        peer = socket.create_connection(('127.0.0.1', target), timeout=.5)
+                        peer.settimeout(2); connections.append(peer); break
+                    except OSError:
+                        if time.monotonic() > deadline: raise
+                        time.sleep(.05)
+            def read_until(peer, expected):
+                decoder = bridge.FrameDecoder(); frames = []
+                while time.monotonic() < deadline and not any(h.get('type') == expected for h, _ in frames):
+                    chunk = peer.recv(262144)
+                    if not chunk: break
+                    frames.extend(decoder.feed(chunk))
+                return frames
+            cloud = read_until(connections[0], 'cloud')
+            pose = read_until(connections[1], 'pose')
+            self.assertTrue(any(h['type'] == 'cloud' for h, _ in cloud))
+            self.assertTrue(any(h['type'] == 'pose' for h, _ in pose))
+            self.assertTrue(all(h['type'] in ('hello','pose','reset') and not payload for h,payload in pose))
+            self.assertEqual(cloud[0][0]['session'], pose[0][0]['session'])
+        finally:
+            for peer in connections: peer.close()
+            child.terminate(); child.wait(timeout=5)
+
     def test_invalid_prefix_and_oversize_rejected(self):
         for prefix in (bridge.PREFIX.pack(b"FAIL", 10, 0),
                        bridge.PREFIX.pack(b"AGM1", 0, 0),
@@ -100,6 +146,54 @@ class MapTests(unittest.TestCase):
             self.assertEqual(header["session"], core.session)
             self.assertTrue(math.isfinite(header["stamp"]))
         self.assertEqual([header["seq"] for header, _ in frames], sorted({header["seq"] for header, _ in frames}))
+
+    def test_pose_only_peer_shares_session_but_never_receives_cloud(self):
+        core = bridge.MapBridge()
+        core.publish_cloud([(0, 0, 0, 10)], 1)
+        core.publish_pose((1, 2, 3), (0, 0, 0, 1), 1)
+        cloud, pose = CapturePeer(), CapturePeer()
+        self.assertTrue(core.add_peer(cloud))
+        self.assertTrue(core.add_pose_peer(pose))
+        core.publish_cloud([(1, 0, 0, 20)], 2)
+        core.publish_pose((2, 2, 3), (0, 0, 0, 1), 2)
+        frames = pose.frames()
+        self.assertEqual([header['type'] for header, _ in frames], ['hello', 'pose', 'pose'])
+        self.assertTrue(all(not payload for _, payload in frames))
+        self.assertTrue(all(header['session'] == core.session for header, _ in frames))
+        self.assertTrue(all(header['frame'] == 'world' for header, _ in frames))
+        old_session = core.session
+        core.reset_source('new map')
+        core.publish_pose((3, 2, 3), (0, 0, 0, 1), 3)
+        frames = pose.frames()
+        self.assertNotEqual(old_session, core.session)
+        self.assertEqual([header['type'] for header, _ in frames[-2:]], ['reset', 'pose'])
+        self.assertTrue(all(header['session'] == core.session for header, _ in frames[-2:]))
+        self.assertIn('cloud', [header['type'] for header, _ in cloud.frames()])
+
+    def test_pose_only_peer_does_not_wait_for_snapshot(self):
+        core = bridge.MapBridge()
+        self.assertTrue(core.publish_cloud([(0, 0, 0, 1)], 1))
+        entered, release, added = threading.Event(), threading.Event(), threading.Event()
+        original = core._payload
+        def slow_snapshot(points):
+            entered.set()
+            if not release.wait(3): raise RuntimeError('test timeout')
+            return original(points)
+        core._payload = slow_snapshot
+        cloud = CapturePeer()
+        pose = CapturePeer()
+        connector = threading.Thread(target=lambda: core.add_peer(cloud))
+        pose_connector = threading.Thread(target=lambda: (core.add_pose_peer(pose), added.set()))
+        connector.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            pose_connector.start()
+            self.assertTrue(added.wait(1))
+        finally:
+            release.set()
+            connector.join(3)
+            if pose_connector.ident is not None: pose_connector.join(3)
+        self.assertEqual([h['type'] for h, _ in pose.frames()], ['hello'])
 
     def test_snapshot_atomic_order_with_concurrent_publication(self):
         core = bridge.MapBridge()
