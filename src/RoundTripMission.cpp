@@ -35,7 +35,7 @@ RoundTripMission::RoundTripMission(GroundLink *link, MappingClient *mapping, int
         m_status = accepted ? (m_pendingOperation == "upload"
             ? QStringLiteral("自动任务已上传；确认起降区域空旷后点击开始")
             : m_pendingOperation == "cancel" ? QStringLiteral("终止请求已接受，请检查悬停并人工接管")
-            : m_pendingOperation == "initialize" ? QStringLiteral("已按新围栏重启规划器，等待就绪后重新标定起降点")
+            : m_pendingOperation == "initialize" ? QStringLiteral("初始化请求已接受，等待机载准备完成")
             : m_pendingOperation == "clear" ? QStringLiteral("环境已初始化：请重新确认起降点，再选目标并上传")
             : QStringLiteral("开始请求已接受，等待机载执行状态")) : QStringLiteral("请求未确认：%1").arg(reason);
         m_pendingId.clear(); m_pendingOperation.clear();
@@ -163,6 +163,8 @@ bool RoundTripMission::canClear() const {
 bool RoundTripMission::canInitialize() const {
     // 已连接时沿用 canClear 的全部安全条件；未连接时允许点击——它的用途正是
     // 把机载适配器拉起来，此时拿不到飞行状态，只能依赖连接恢复后的 clear 校验。
+    const QString phase = m_link->mission().value("init_phase").toString();
+    if (!phase.isEmpty() && phase != "idle" && phase != "ready" && phase != "failed") return false;
     if (m_link->connected()) return canClear();
     return !m_link->busy();
 }
@@ -200,14 +202,15 @@ void RoundTripMission::startAdapterBootstrap() {
 
 void RoundTripMission::sendInitialize() {
     const auto task = m_link->mission();
+    const QVariantList bounds = m_pendingInitBounds;
+    m_pendingInitBounds.clear(); // sendCommand 发出 changed 时避免重复发送。
     m_pendingOperation = "initialize";
-    m_pendingId = m_link->sendCommand("clear", task.value("map_session_id").toString(), QString(), 0,
-                                      {}, {}, {{"bounds", m_pendingInitBounds},
+    m_pendingId = m_link->sendCommand("initialize", task.value("map_session_id").toString(), QString(), 0,
+                                      {}, {}, {{"bounds", bounds},
                                                {"project_dir", m_pendingInitProject}});
     m_status = m_pendingId.isEmpty()
         ? QStringLiteral("未能发送初始化请求")
         : QStringLiteral("正在初始化：清理机载任务并按新围栏重启前置链路…");
-    m_pendingInitBounds.clear();
     emit changed();
 }
 
@@ -261,8 +264,13 @@ void RoundTripMission::update() {
 
     // 引导流程：适配器起来、链路恢复后自动补发 initialize
     if (!m_pendingInitBounds.isEmpty()) {
-        if (m_link->connected()) sendInitialize();
-        else if (QDateTime::currentMSecsSinceEpoch() > m_initDeadline) {
+        if (m_link->connected()) {
+            if (canClear()) sendInitialize();
+            else {
+                m_pendingInitBounds.clear();
+                m_status = QStringLiteral("初始化未发送：请确认飞控未解锁且任务未在执行");
+            }
+        } else if (QDateTime::currentMSecsSinceEpoch() > m_initDeadline) {
             m_pendingInitBounds.clear();
             m_status = QStringLiteral("机载适配器启动后 90 秒内未连上，请检查网络与机载进程");
         }

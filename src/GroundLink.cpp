@@ -128,8 +128,6 @@ QString GroundLink::sendCommand(const QString &operation, const QString &session
     QJsonObject obj{{"type", "command"}, {"protocol", 2}, {"operation", operation},
                     {"map_session_id", session}, {"mission_id", mission}, {"revision", revision},
                     {"require_map_alignment", true}};
-    m_pendingId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    obj["request_id"] = m_pendingId;
     if (operation == "initialize") {
         // 围栏 6 个数值 + 机载项目目录；机载会据此重启规划器。
         const QVariantList bounds = fields.value("bounds").toList();
@@ -151,6 +149,8 @@ QString GroundLink::sendCommand(const QString &operation, const QString &session
             obj["ground_origin"] = QJsonObject::fromVariantMap(automatic.value("ground_origin").toMap());
         }
     }
+    m_pendingId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    obj["request_id"] = m_pendingId;
     const QByteArray bytes = QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
     if (bytes.size() > kMaxFrameBytes || m_socket.write(bytes) != bytes.size()) {
         m_pendingId.clear(); return {};
@@ -235,6 +235,11 @@ void GroundLink::consumeLine(const QByteArray &line)
         object.value(QStringLiteral("mode")).toString().size() > 64) return;
     m_protocol = protocol;
     m_mission = protocol == 2 ? object.value("mission").toObject().toVariantMap() : QVariantMap();
+    // 初始化状态位于遥测顶层，供任务面板显示机载异步进度。
+    if (protocol == 2) {
+        for (const QString &key : {QStringLiteral("init_phase"), QStringLiteral("init_detail"), QStringLiteral("init_ok")})
+            if (object.contains(key)) m_mission.insert(key, object.value(key).toVariant());
+    }
     m_mapValid = protocol == 2 && object.value("map_coordinates_valid").isBool() && object.value("map_coordinates_valid").toBool();
     m_mapStamp = object.value("map_odom_stamp").toDouble();
     m_bounds = object.value("flight_bounds").toArray().toVariantList();
