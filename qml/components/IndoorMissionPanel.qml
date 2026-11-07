@@ -58,10 +58,6 @@ Rectangle {
                 Text { text: "秒 · 0–60"; color: "#9dbac8"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
             }
             Text { width: parent.width; text: "任务：自动起飞 → 前往 P → 悬停 → 返回起飞点 → 自动降落并锁定电机\n图上连线为参考，不代表实际避障轨迹。"; color: "#a9c3d0"; font.pixelSize: 12; wrapMode: Text.WordWrap }
-            Row {
-                spacing: 8
-                GButton { width: 124; height: 32; text: "查询任务状态"; enabled: groundLink.connected && !groundLink.busy; onClicked: groundLink.queryMission() }
-            }
             Text { width: parent.width; text: control.mission.status; color: "#ecce9a"; font.pixelSize: 12; wrapMode: Text.WordWrap }
         }
     }
