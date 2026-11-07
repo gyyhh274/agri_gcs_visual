@@ -52,7 +52,7 @@ Rectangle {
             Row {
                 spacing: 8
                 GButton { width: 124; height: 32; text: "查询任务状态"; enabled: groundLink.connected && !groundLink.busy; onClicked: groundLink.queryMission() }
-                GButton { width: 124; height: 32; text: "任务初始化…"; fill: "#2f6f8f"; enabled: control.mission.canClear; onClicked: cancelDialog.open() }
+                GButton { width: 124; height: 32; text: "任务初始化…"; fill: "#2f6f8f"; enabled: control.mission.canInitialize; onClicked: cancelDialog.open() }
             }
             Text { width: parent.width; text: control.mission.status; color: "#ecce9a"; font.pixelSize: 12; wrapMode: Text.WordWrap }
         }
@@ -172,7 +172,7 @@ Rectangle {
                 spacing: 12
                 GButton {
                     width: 150; height: 35; text: "确认初始化"
-                    enabled: control.mission.canClear
+                    enabled: control.mission.canInitialize
                     onClicked: {
                         // 直接读输入框，避免"改完立刻点确认"时 editingFinished 还没触发。
                         const f = []

@@ -18,6 +18,7 @@ class RoundTripMission : public QObject {
     Q_PROPERTY(bool active READ active NOTIFY changed)
     Q_PROPERTY(bool canCancel READ canCancel NOTIFY changed)
     Q_PROPERTY(bool canClear READ canClear NOTIFY changed)
+    Q_PROPERTY(bool canInitialize READ canInitialize NOTIFY changed)
     Q_PROPERTY(double height READ height NOTIFY changed)
     Q_PROPERTY(QVector3D home READ home NOTIFY changed)
     Q_PROPERTY(QVector3D groundOrigin READ groundOrigin NOTIFY changed)
@@ -40,6 +41,7 @@ public:
     bool active() const;
     bool canCancel() const;
     bool canClear() const;
+    bool canInitialize() const;
     double height() const { return m_height; }
     QVector3D home() const { return m_home; }
     QVector3D groundOrigin() const { return m_groundOrigin; }
@@ -75,5 +77,11 @@ private:
     bool m_homeValid = false, m_hasTarget = false, m_uploaded = false;
     double m_height = 1.;
     QString m_lastInitPhase;
+    QVariantList m_pendingInitBounds;
+    QString m_pendingInitProject;
+    qint64 m_initDeadline = 0;
+    class QProcess *m_bootstrap = nullptr;
+    void startAdapterBootstrap();
+    void sendInitialize();
     int m_mappingPort;
 };

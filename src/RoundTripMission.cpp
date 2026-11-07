@@ -1,4 +1,8 @@
 #include "RoundTripMission.h"
+
+#include <QCoreApplication>
+#include <QFileInfo>
+#include <QProcess>
 #include "GroundLink.h"
 #include "MappingClient.h"
 #include <QDateTime>
@@ -156,8 +160,59 @@ bool RoundTripMission::canClear() const {
     // 不在飞行中就应该可用，不再要求机载一定处于 READY/COMPLETED/FAILED。
     return !task.value("map_session_id").toString().isEmpty();
 }
+bool RoundTripMission::canInitialize() const {
+    // 已连接时沿用 canClear 的全部安全条件；未连接时允许点击——它的用途正是
+    // 把机载适配器拉起来，此时拿不到飞行状态，只能依赖连接恢复后的 clear 校验。
+    if (m_link->connected()) return canClear();
+    return !m_link->busy();
+}
+
+void RoundTripMission::startAdapterBootstrap() {
+    const QStringList candidates = {
+        QCoreApplication::applicationDirPath() + "/../deploy/remote_exec.py",
+        QCoreApplication::applicationDirPath() + "/deploy/remote_exec.py",
+        QStringLiteral("/home/cat/projects/agri_gcs_visual/deploy/remote_exec.py")};
+    QString script;
+    for (const auto &path : candidates)
+        if (QFileInfo::exists(path)) { script = path; break; }
+    if (script.isEmpty()) {
+        m_status = QStringLiteral("找不到 deploy/remote_exec.py，无法启动机载适配器");
+        m_pendingInitBounds.clear();
+        emit changed();
+        return;
+    }
+    if (m_bootstrap) m_bootstrap->deleteLater();
+    m_bootstrap = new QProcess(this);
+    connect(m_bootstrap, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this](int code, QProcess::ExitStatus) {
+        if (code != 0) {
+            m_status = QStringLiteral("启动机载适配器失败（退出码 %1），请检查机载是否通电联网").arg(code);
+            m_pendingInitBounds.clear();
+        } else {
+            m_status = QStringLiteral("机载适配器已启动，等待连接后自动继续初始化…");
+        }
+        emit changed();
+    });
+    m_status = QStringLiteral("正在启动机载任务适配器…");
+    m_bootstrap->start(QStringLiteral("python3"), {script});
+    emit changed();
+}
+
+void RoundTripMission::sendInitialize() {
+    const auto task = m_link->mission();
+    m_pendingOperation = "initialize";
+    m_pendingId = m_link->sendCommand("clear", task.value("map_session_id").toString(), QString(), 0,
+                                      {}, {}, {{"bounds", m_pendingInitBounds},
+                                               {"project_dir", m_pendingInitProject}});
+    m_status = m_pendingId.isEmpty()
+        ? QStringLiteral("未能发送初始化请求")
+        : QStringLiteral("正在初始化：清理机载任务并按新围栏重启前置链路…");
+    m_pendingInitBounds.clear();
+    emit changed();
+}
+
 void RoundTripMission::initialize(const QVariantList &bounds, const QString &projectDir) {
-    if (!canClear() || bounds.size() != 6 || projectDir.trimmed().isEmpty()) return;
+    if (!canInitialize() || bounds.size() != 6 || projectDir.trimmed().isEmpty()) return;
     double fence[6];
     for (int i = 0; i < 6; ++i) {
         fence[i] = bounds.at(i).toDouble();
@@ -166,14 +221,16 @@ void RoundTripMission::initialize(const QVariantList &bounds, const QString &pro
     if (!(fence[0] < fence[3] && fence[1] < fence[4] && fence[2] < fence[5])) {
         m_status = QStringLiteral("围栏无效：每个轴必须 min < max"); emit changed(); return;
     }
-    m_pendingOperation = "initialize";
-    const auto task = m_link->mission();
-    m_pendingId = m_link->sendCommand("clear", task.value("map_session_id").toString(), QString(), 0,
-                                      {}, {}, {{"bounds", bounds}, {"project_dir", projectDir}});
-    m_status = m_pendingId.isEmpty()
-        ? QStringLiteral("未能发送初始化请求")
-        : QStringLiteral("正在初始化：清理机载任务并按新围栏重启规划器…");
-    emit changed();
+    if (!m_link->connected()) {
+        m_pendingInitBounds = bounds;
+        m_pendingInitProject = projectDir;
+        m_initDeadline = QDateTime::currentMSecsSinceEpoch() + 90000;
+        startAdapterBootstrap();
+        return;
+    }
+    m_pendingInitBounds = bounds;
+    m_pendingInitProject = projectDir;
+    sendInitialize();
 }
 
 void RoundTripMission::clearMission() {
@@ -201,6 +258,15 @@ void RoundTripMission::update() {
     }
     if (phase != "idle" && phase != "ready" && phase != "failed" && !detail.isEmpty())
         m_status = QStringLiteral("初始化中：%1").arg(detail);
+
+    // 引导流程：适配器起来、链路恢复后自动补发 initialize
+    if (!m_pendingInitBounds.isEmpty()) {
+        if (m_link->connected()) sendInitialize();
+        else if (QDateTime::currentMSecsSinceEpoch() > m_initDeadline) {
+            m_pendingInitBounds.clear();
+            m_status = QStringLiteral("机载适配器启动后 90 秒内未连上，请检查网络与机载进程");
+        }
+    }
     emit changed();
 }
 void RoundTripMission::recordHome() {
