@@ -182,7 +182,7 @@ Item {
                 GCard {
                     id: onboardCard
                     width: parent.width
-                    height: relayDiscovery.services.length > 0 ? 425 : 285
+                    height: relayDiscovery.services.length > 0 ? 460 : 322
                     title: "机载连接"
 
                     /* 全部非 skip 项都通过才算就绪；空表时不算就绪。 */
@@ -233,6 +233,16 @@ Item {
                                 text: relayDiscovery.scanning ? "扫描中…" : "自动发现"
                                 fill: relayDiscovery.scanning ? "#2a5d80" : "#0a6b4a"
                                 onClicked: relayDiscovery.scan(VideoConfig.host)
+                            }
+                        }
+                        Row {
+                            width: parent.width; height: 31; spacing: 8
+                            FormLabel { width: 76; text: "项目目录" }
+                            ValueField {
+                                width: parent.width - 84; height: 31
+                                text: VideoConfig.projectDir
+                                placeholderText: "/home/nv/.local/state/agri-gcs"
+                                onTextEdited: VideoConfig.projectDir = text.trim()
                             }
                         }
                         Row {
@@ -362,39 +372,6 @@ Item {
                             visible: relayDiscovery.services.length === 0
                             text: "尚未测试。点「测试连接」会逐项做协议握手（SSH banner / RTSP / 照片 JSON / 点云 / 建图 / 遥测），因为只看端口能不能连是不够的：走代理时任何 IP 都会「连得上」。"
                             height: 34
-                            color: "#6d8496"; font.pixelSize: 11; wrapMode: Text.WordWrap
-                        }
-                    }
-                }
-
-                /* ── 高级：端口与隧道端点（常量，收起来） ─────────────── */
-                GCard {
-                    id: advancedCard
-                    width: parent.width
-                    height: advancedCard.collapsed ? 46 : 238
-                    title: "高级：端口与隧道端点（一般不需要改）"
-                    collapsible: true
-                    Column {
-                        x: 16; y: 4; width: parent.width - 32; spacing: 3
-                        Repeater {
-                            model: [
-                                ["图传 RTSP", VideoConfig.host + ":8554/a8mini", "MediaMTX 中转，H.265，走 TCP"],
-                                ["云台指令", VideoConfig.host + ":37260", "UDP，经 siyi-gimbal-relay 转发"],
-                                ["照片/录像", VideoConfig.host + ":37261", "HTTP，代理到相机 :82"],
-                                ["点云流", "127.0.0.1:37262", "SSH 隧道 → 机载 37262，AGM1 协议"],
-                                ["建图启动", "127.0.0.1:37263", "SSH 隧道 → 机载 37263，HTTP /ensure"],
-                                ["遥测网关", "127.0.0.1:8765", "SSH 隧道 → 机载 8765，逐行 JSON"]
-                            ]
-                            delegate: Row {
-                                width: parent.width; height: 24
-                                Text { width: 90; height: 24; text: modelData[0]; color: "#cbdbea"; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
-                                Text { width: 186; height: 24; text: modelData[1]; color: "#8fa6ba"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
-                                Text { width: parent.width - 276; height: 24; text: modelData[2]; color: "#7f97ab"; font.pixelSize: 11; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
-                            }
-                        }
-                        Text {
-                            width: parent.width
-                            text: "前三个走 Wi-Fi 直连机载电脑，后三个走 SSH 隧道（隧道目标随上面的地址与用户自动切换）。机巢与 RTK 仍是演示，未接入真实设备。"
                             color: "#6d8496"; font.pixelSize: 11; wrapMode: Text.WordWrap
                         }
                     }
