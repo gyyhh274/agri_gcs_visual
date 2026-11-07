@@ -60,7 +60,9 @@ public:
     Q_INVOKABLE void start();
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void clearMission();
-    Q_INVOKABLE void initialize(const QVariantList &bounds, const QString &projectDir, double takeoffHeight);
+    Q_INVOKABLE QVariantMap initializationPosition() const;
+    Q_INVOKABLE bool initialize(const QVariantList &bounds, const QString &projectDir, double takeoffHeight);
+    Q_INVOKABLE void connectForInitialization();
 signals:
     void changed();
 private:

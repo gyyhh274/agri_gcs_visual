@@ -128,12 +128,17 @@ private slots:
         h.odomFresh = false;
         h.aligned = false;
         QTRY_VERIFY_WITH_TIMEOUT(h.mission.canInitialize(), 4000);
-        const QVariantList fence{-1., -1., -.2, 1., 1., 1.8};
-        h.mission.initialize(fence, "/home/nv/Documents/diff-planner-A8mini", .8);
+        QTRY_VERIFY(h.mission.initializationPosition().value("valid").toBool());
+        const QVariantList fence{-.6, -1.2, -.2, 1.4, .8, 1.8};
+        QVERIFY(h.mission.initialize(fence, "/home/nv/Documents/diff-planner-A8mini", .8));
         QTRY_COMPARE(h.commands.size(), 1);
         const auto command = h.commands.first();
         QCOMPARE(command.value("operation").toString(), QString("initialize"));
-        QCOMPARE(command.value("bounds").toArray(), QJsonArray::fromVariantList(fence));
+        const auto sentBounds = command.value("bounds").toArray();
+        QCOMPARE(sentBounds.size(), 6);
+        QVERIFY(qAbs((sentBounds[0].toDouble()+sentBounds[3].toDouble())/2.-.4) < 1e-5);
+        QVERIFY(qAbs((sentBounds[1].toDouble()+sentBounds[4].toDouble())/2.+.2) < 1e-5);
+        QVERIFY(qAbs(sentBounds[3].toDouble()-sentBounds[0].toDouble()-2.) < 1e-5);
         QCOMPARE(command.value("takeoff_height").toDouble(), .8);
         QCOMPARE(command.value("project_dir").toString(), QString("/home/nv/Documents/diff-planner-A8mini"));
         QTRY_VERIFY(!h.link.busy());
@@ -148,6 +153,21 @@ private slots:
         QTRY_VERIFY(h.link.armed());
         QVERIFY(!h.mission.canInitialize());
         QTest::qWait(150); QCOMPARE(h.commands.size(), 1);
+    }
+    void initializationRejectsMovementAndStalePosition() {
+        MissionHarness h;
+        QTRY_VERIFY_WITH_TIMEOUT(h.mission.canInitialize() && h.mission.initializationPosition().value("valid").toBool(), 4000);
+        const QVariantList oldFence{-.6, -1.2, -.2, 1.4, .8, 1.8};
+        h.worldX = .6;
+        QTRY_VERIFY(qAbs(h.link.worldX()-.6) < 1e-6);
+        QVERIFY(!h.mission.initialize(oldFence, "/home/nv/Documents/diff-planner-A8mini", .5));
+        QVERIFY(h.mission.status().contains(QStringLiteral("位置已变化")));
+        QVERIFY(h.commands.isEmpty());
+        h.odomFresh = false;
+        h.map.setPaused(true);
+        QTRY_VERIFY(!h.mission.initializationPosition().value("valid").toBool());
+        QVERIFY(!h.mission.initialize(oldFence, "/home/nv/Documents/diff-planner-A8mini", .5));
+        QVERIFY(h.commands.isEmpty());
     }
     void readinessShowsSpecificUnmetConditions() {
         MissionHarness h;

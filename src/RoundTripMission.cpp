@@ -286,7 +286,9 @@ void RoundTripMission::startAdapterBootstrap() {
             m_status = QStringLiteral("启动机载适配器失败（退出码 %1），请检查机载是否通电联网").arg(code);
             m_pendingInitBounds.clear();
         } else {
-            m_status = QStringLiteral("机载适配器已启动，等待连接后自动继续初始化…");
+            m_status = m_pendingInitBounds.isEmpty()
+                ? QStringLiteral("机载适配器已启动，请连接并刷新当前位置后核对围栏")
+                : QStringLiteral("机载适配器已启动，等待连接后自动继续初始化…");
         }
         emit changed();
     });
@@ -295,10 +297,43 @@ void RoundTripMission::startAdapterBootstrap() {
     emit changed();
 }
 
+QVariantMap RoundTripMission::initializationPosition() const {
+    // 优先使用机载任务状态中的新鲜 EKF；启动初期 EKF 尚未运行时，允许使用新鲜的 LIVE LIO 预览。
+    if (m_link->connected() && m_link->odomFresh())
+        return {{"valid", true}, {"x", m_link->worldX()}, {"y", m_link->worldY()},
+                {"z", m_link->worldZ()}, {"source", QStringLiteral("EKF")}};
+    const double age = QDateTime::currentMSecsSinceEpoch()/1000. - m_mapping->poseStamp();
+    if (m_mapping->connected() && !m_mapping->demo() && !m_mapping->paused() && !m_mapping->stale()
+        && m_mapping->hasPose() && m_mapping->frameId() == "world" && age >= -.1 && age < 1.5)
+        return {{"valid", true}, {"x", double(m_mapping->positionX())}, {"y", double(m_mapping->positionY())},
+                {"z", double(m_mapping->positionZ())}, {"source", QStringLiteral("LIVE 地图定位")}};
+    return {{"valid", false}};
+}
+
+void RoundTripMission::connectForInitialization() {
+    if (!m_link->connected() && !m_link->busy()) startAdapterBootstrap();
+}
+
 void RoundTripMission::sendInitialize() {
     const auto task = m_link->mission();
-    const QVariantList bounds = m_pendingInitBounds;
+    QVariantList bounds = m_pendingInitBounds;
     m_pendingInitBounds.clear(); // sendCommand 发出 changed 时避免重复发送。
+    const auto pos = initializationPosition();
+    if (!pos.value("valid").toBool() || bounds.size() != 6) {
+        m_status = QStringLiteral("初始化未发送：当前位置未更新，请等待定位后重新核对围栏"); emit changed(); return;
+    }
+    const double x = pos.value("x").toDouble(), y = pos.value("y").toDouble(), z = pos.value("z").toDouble();
+    const double cx = (bounds[0].toDouble() + bounds[3].toDouble()) / 2.;
+    const double cy = (bounds[1].toDouble() + bounds[4].toDouble()) / 2.;
+    if (std::hypot(x-cx, y-cy) > .05 || z <= bounds[2].toDouble() ||
+        z + m_pendingInitHeight >= bounds[5].toDouble()) {
+        m_status = QStringLiteral("位置已变化或起飞高度超出围栏，请重新核对后初始化"); emit changed(); return;
+    }
+    // 以发送请求时最新位置为中心，保持用户核对过的宽度和长度。
+    const double halfX = (bounds[3].toDouble() - bounds[0].toDouble()) / 2.;
+    const double halfY = (bounds[4].toDouble() - bounds[1].toDouble()) / 2.;
+    bounds[0] = x-halfX; bounds[3] = x+halfX;
+    bounds[1] = y-halfY; bounds[4] = y+halfY;
     m_pendingOperation = "initialize";
     m_pendingId = m_link->sendCommand("initialize", task.value("map_session_id").toString(), QString(), 0,
                                       {}, {}, {{"bounds", bounds},
@@ -310,21 +345,30 @@ void RoundTripMission::sendInitialize() {
     emit changed();
 }
 
-void RoundTripMission::initialize(const QVariantList &bounds, const QString &projectDir, double takeoffHeight) {
-    if (!canInitialize() || bounds.size() != 6 || projectDir.trimmed().isEmpty()) return;
+bool RoundTripMission::initialize(const QVariantList &bounds, const QString &projectDir, double takeoffHeight) {
+    if (!canInitialize() || bounds.size() != 6 || projectDir.trimmed().isEmpty()) return false;
     double fence[6];
     for (int i = 0; i < 6; ++i) {
         fence[i] = bounds.at(i).toDouble();
-        if (!std::isfinite(fence[i])) return;
+        if (!std::isfinite(fence[i])) return false;
     }
     if (!(fence[0] < fence[3] && fence[1] < fence[4] && fence[2] < fence[5])) {
-        m_status = QStringLiteral("围栏无效：每个轴必须 min < max"); emit changed(); return;
+        m_status = QStringLiteral("围栏无效：每个轴必须 min < max"); emit changed(); return false;
     }
     if (!std::isfinite(takeoffHeight) || takeoffHeight <= .1 || takeoffHeight >= fence[5] - fence[2]) {
-        m_status = QStringLiteral("起飞高度须大于 0.1 m，且小于围栏高度"); emit changed(); return;
+        m_status = QStringLiteral("起飞高度须大于 0.1 m，且小于围栏高度"); emit changed(); return false;
     }
     if (m_link->connected() && !m_link->mission().value("init_height_supported").toBool()) {
-        m_status = QStringLiteral("机载网关版本不支持设置起飞高度，请更新机载程序"); emit changed(); return;
+        m_status = QStringLiteral("机载网关版本不支持设置起飞高度，请更新机载程序"); emit changed(); return false;
+    }
+    const auto pos = initializationPosition();
+    if (!pos.value("valid").toBool()) {
+        m_status = QStringLiteral("当前位置未更新，请等待机载或 LIVE 地图定位后重新核对围栏"); emit changed(); return false;
+    }
+    const double x = pos.value("x").toDouble(), y = pos.value("y").toDouble(), z = pos.value("z").toDouble();
+    if (std::hypot(x-(fence[0]+fence[3])/2., y-(fence[1]+fence[4])/2.) > .05 ||
+        z <= fence[2] || z + takeoffHeight >= fence[5]) {
+        m_status = QStringLiteral("位置已变化或起飞高度超出围栏，请重新核对后初始化"); emit changed(); return false;
     }
     m_pendingInitHeight = takeoffHeight;
     if (!m_link->connected()) {
@@ -332,11 +376,12 @@ void RoundTripMission::initialize(const QVariantList &bounds, const QString &pro
         m_pendingInitProject = projectDir;
         m_initDeadline = QDateTime::currentMSecsSinceEpoch() + 90000;
         startAdapterBootstrap();
-        return;
+        return true;
     }
     m_pendingInitBounds = bounds;
     m_pendingInitProject = projectDir;
     sendInitialize();
+    return !m_pendingId.isEmpty();
 }
 
 void RoundTripMission::clearMission() {

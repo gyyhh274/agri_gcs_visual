@@ -3,6 +3,7 @@
 #include <QTcpSocket>
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QJSValue>
 #include <QDateTime>
 #include <QtEndian>
 #include <QQmlComponent>
@@ -143,6 +144,20 @@ private slots:
             auto *uploadButton = panel->findChild<QQuickItem *>("roundTripUploadButton");
             auto *startButton = panel->findChild<QQuickItem *>("roundTripStartButton");
             QVERIFY(initButton && pickButton && uploadButton && startButton);
+            QVERIFY(QMetaObject::invokeMethod(initButton,"clicked"));
+            auto *initDialog = panel->findChild<QObject *>("roundTripInitializeDialog");
+            QVERIFY(initDialog);
+            const QJSValue fields = initDialog->property("fields").value<QJSValue>();
+            auto *xmin = fields.property(0).toQObject();
+            auto *ymin = fields.property(1).toQObject();
+            auto *xmax = fields.property(3).toQObject();
+            auto *ymax = fields.property(4).toQObject();
+            QVERIFY(xmin && ymin && xmax && ymax);
+            QTRY_VERIFY(!xmin->property("text").toString().isEmpty());
+            QVERIFY(qAbs((xmin->property("text").toDouble()+xmax->property("text").toDouble())/2.-.4) < .01);
+            QVERIFY(qAbs((ymin->property("text").toDouble()+ymax->property("text").toDouble())/2.+.2) < .01);
+            QVERIFY(qAbs(xmax->property("text").toDouble()-xmin->property("text").toDouble()-4.) < .01);
+            QVERIFY(QMetaObject::invokeMethod(initDialog,"close"));
             QVERIFY(initButton->y() < pickButton->y());
             QVERIFY(pickButton->y() < uploadButton->y());
             QVERIFY(uploadButton->y() < startButton->y());

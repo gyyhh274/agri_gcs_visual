@@ -105,22 +105,36 @@ Rectangle {
     }
     Dialog {
         id: cancelDialog
-        parent: Overlay.overlay; width: 460; height: 450
+        objectName: "roundTripInitializeDialog"
+        parent: Overlay.overlay; width: 460; height: groundLink.connected ? 500 : 535
         x: (parent.width-width)/2; y: (parent.height-height)/2; modal: true
         /* 6 个围栏值，顺序与协议一致：xmin, ymin, zmin, xmax, ymax, zmax。
          * 输入框不用 text 绑定（绑定会和用户键入互相打架，导致"改不动"），
          * 改成打开时按值写入、编辑完成后再回写。 */
         property var fence: [0, 0, 0, 0, 0, 0]
         property var fields: []
+        property var center: ({ valid: false })
         onOpened: {
-            let current = control.mission.flightBounds
-            if (!current || current.length !== 6 || current.every(function (v) { return v === 0 }))
-                current = groundLink.flightBounds
-            if (!current || current.length !== 6) {
-                const x = groundLink.worldX, y = groundLink.worldY, z = groundLink.worldZ
-                current = [x - 1, y - 1, z - 0.05, x + 1, y + 1, z + 1.5]
+            center = { valid: false }
+            refreshFence()
+        }
+        function refreshFence() {
+            const pos = control.mission.initializationPosition()
+            if (!pos.valid) {
+                center = { valid: false }
+                fenceHint.text = "当前位置未更新，请连接机载或等待 LIVE 地图定位，再刷新位置"
+                return
             }
-            fence = current.slice()
+            let current = center.valid ? fence : groundLink.flightBounds
+            if (!current || current.length !== 6 || current.every(function (v) { return v === 0 }))
+                current = control.mission.flightBounds
+            let width = 2.0, length = 2.0, height = 1.55
+            if (current && current.length === 6 && current[3] > current[0] && current[4] > current[1] && current[5] > current[2]) {
+                width = current[3]-current[0]; length = current[4]-current[1]; height = current[5]-current[2]
+            }
+            center = pos
+            fence = [pos.x-width/2, pos.y-length/2, pos.z-0.05,
+                     pos.x+width/2, pos.y+length/2, pos.z-0.05+height]
             fenceHint.text = ""
             Qt.callLater(function () {
                 for (let i = 0; i < 6; ++i)
@@ -143,6 +157,11 @@ Rectangle {
                     swapped = true
                 }
             }
+            if (center.valid) {
+                const width = next[3]-next[0], length = next[4]-next[1]
+                next[0] = center.x-width/2; next[3] = center.x+width/2
+                next[1] = center.y-length/2; next[4] = center.y+length/2
+            }
             fence = next
             for (let i = 0; i < 6; ++i)
                 if (fields[i]) fields[i].text = Number(next[i]).toFixed(2)
@@ -153,11 +172,11 @@ Rectangle {
             spacing: 10
             Text { text: "任务初始化"; color: "white"; font.pixelSize: 18 }
             Text { width: parent.width
-                   text: "清理机载电脑上已有的任务并解除失效闩锁，同时按下面 6 个数值设置本次飞行围栏、重启规划器与轨迹服务器。\n规划器重启会重建地图，之后必须重新标定起降点。仅在地面、飞控未解锁时可用。"
+                   text: "每次初始化都以当前位置为水平中心，沿用上次围栏的宽和长。请核对新的边界是否在实际场地内。\n初始化会清理旧任务并重建规划器地图；仅在地面、飞控未解锁时可用。"
                    color: "#cfe0ef"; wrapMode: Text.WordWrap; font.pixelSize: 12 }
 
             Text { width: parent.width
-                   text: "本次围栏（world 坐标，单位 m）：X/Y 为水平范围，Z 为高度范围（最低不能低于地面）"
+                   text: "本次围栏（world 坐标，m）：X/Y 自动居中；Z 为高度上下限，可按现场调整。"
                    color: "#8fb6cc"; font.pixelSize: 11; wrapMode: Text.WordWrap }
             Grid {
                 id: fenceGrid
@@ -173,6 +192,7 @@ Rectangle {
                         Text { width: 52; text: modelData.label; color: "#b7cedb"; font.pixelSize: 12
                                anchors.verticalCenter: parent.verticalCenter }
                         TextField {
+                            objectName: "initialFenceBound" + modelData.index
                             width: parent.width - 58; height: 30
                             color: "#dce9f7"; font.pixelSize: 12
                             selectByMouse: true; inputMethodHints: Qt.ImhFormattedNumbersOnly
@@ -183,6 +203,14 @@ Rectangle {
                     }
                 }
             }
+
+            Row {
+                spacing: 8
+                Text { width: 270; color: "#8fb6cc"; font.pixelSize: 11; wrapMode: Text.WordWrap
+                       text: cancelDialog.center.valid ? "中心：(" + Number(cancelDialog.center.x).toFixed(2) + ", " + Number(cancelDialog.center.y).toFixed(2) + ") · " + cancelDialog.center.source : "等待定位" }
+                GButton { width: 100; height: 30; text: "刷新位置"; pixelSize: 12; onClicked: cancelDialog.refreshFence() }
+            }
+            GButton { width: parent.width; height: 30; text: "连接机载任务服务"; visible: !groundLink.connected; onClicked: control.mission.connectForInitialization() }
 
             Row {
                 spacing: 8
@@ -209,12 +237,12 @@ Rectangle {
                 spacing: 12
                 GButton {
                     width: 150; height: 35; text: "确认初始化"
-                    enabled: control.mission.canInitialize
+                    enabled: control.mission.canInitialize && cancelDialog.center.valid
                     onClicked: {
                         // 直接读输入框，避免"改完立刻点确认"时 editingFinished 还没触发。
                         const f = []
                         for (let i = 0; i < 6; ++i)
-                            f.push(cancelDialog.fields[i] ? Number(cancelDialog.fields[i].text) : NaN)
+                            f.push(cancelDialog.fields[i] && cancelDialog.fields[i].text.trim().length ? Number(cancelDialog.fields[i].text) : NaN)
                         if (f.some(function (v) { return !isFinite(v) })) {
                             fenceHint.text = "围栏数值无效"
                             return
@@ -228,8 +256,12 @@ Rectangle {
                             fenceHint.text = "起飞高度须大于 0.1 m，且小于围栏高度"
                             return
                         }
-                        control.mission.initialize(f, VideoConfig.projectDir, h)
-                        cancelDialog.close()
+                        // 不信任编辑完成事件：确认时按预览中心重算水平边界。
+                        const width = f[3]-f[0], length = f[4]-f[1]
+                        f[0] = cancelDialog.center.x-width/2; f[3] = cancelDialog.center.x+width/2
+                        f[1] = cancelDialog.center.y-length/2; f[4] = cancelDialog.center.y+length/2
+                        if (control.mission.initialize(f, VideoConfig.projectDir, h)) cancelDialog.close()
+                        else fenceHint.text = control.mission.status
                     }
                 }
                 GButton { width: 110; height: 35; text: "取消"; onClicked: cancelDialog.close() }
