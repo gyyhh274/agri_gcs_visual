@@ -240,7 +240,7 @@ void GroundLink::consumeLine(const QByteArray &line)
     m_mission = protocol == 2 ? object.value("mission").toObject().toVariantMap() : QVariantMap();
     // 初始化状态位于遥测顶层，供任务面板显示机载异步进度。
     if (protocol == 2) {
-        for (const QString &key : {QStringLiteral("init_phase"), QStringLiteral("init_detail"), QStringLiteral("init_ok"), QStringLiteral("init_height_supported")})
+        for (const QString &key : {QStringLiteral("init_phase"), QStringLiteral("init_detail"), QStringLiteral("init_ok"), QStringLiteral("init_height_supported"), QStringLiteral("preflight_controller_reasons"), QStringLiteral("preflight_mission_reasons"), QStringLiteral("map_gate_reason"), QStringLiteral("map_last_reject"), QStringLiteral("map_last_reject_detail"), QStringLiteral("map_planner")})
             if (object.contains(key)) m_mission.insert(key, object.value(key).toVariant());
     }
     m_mapValid = protocol == 2 && object.value("map_coordinates_valid").isBool() && object.value("map_coordinates_valid").toBool();

@@ -46,6 +46,7 @@ public:
     QString mapSession = "map-session";
     bool autoAck = true, aligned = true, armed = false, odomFresh = true;
     QString initPhase = "idle", initDetail;
+    QJsonArray controllerFailures, missionFailures;
     int protocol = 2;
     double worldX = .4, worldZ = .2;
     QTimer heartbeat;
@@ -103,7 +104,7 @@ public:
             {"server","agri-onboard-ros"}, {"fcu_connected",true}, {"armed",armed},
             {"mission_ready",armed}, {"odom_fresh",odomFresh}, {"mode",armed ? "OFFBOARD" : "STABILIZED"},
             {"battery_percent",80.}, {"world_x",worldX}, {"world_y",-.2}, {"world_z",worldZ},
-            {"mission",state}, {"init_height_supported",true}, {"init_phase",initPhase}, {"init_detail",initDetail}, {"init_ok",initPhase == "ready"}, {"map_coordinates_valid",aligned}, {"map_odom_stamp",now}, {"flight_bounds",bounds}};
+            {"mission",state}, {"init_height_supported",true}, {"preflight_controller_reasons",controllerFailures}, {"preflight_mission_reasons",missionFailures}, {"init_phase",initPhase}, {"init_detail",initDetail}, {"init_ok",initPhase == "ready"}, {"map_coordinates_valid",aligned}, {"map_odom_stamp",now}, {"flight_bounds",bounds}};
         if (taskPeer && taskPeer->state() == QAbstractSocket::ConnectedState)
             taskPeer->write(QJsonDocument(telemetry).toJson(QJsonDocument::Compact)+'\n');
         if (mapPeer && mapPeer->state() == QAbstractSocket::ConnectedState) {
@@ -147,6 +148,21 @@ private slots:
         QTRY_VERIFY(h.link.armed());
         QVERIFY(!h.mission.canInitialize());
         QTest::qWait(150); QCOMPARE(h.commands.size(), 1);
+    }
+    void readinessShowsSpecificUnmetConditions() {
+        MissionHarness h;
+        QTRY_VERIFY_WITH_TIMEOUT(h.mission.canRecord(), 4000);
+        h.state["takeoff_ready"] = false;
+        h.controllerFailures = QJsonArray{"rc_hover", "rc_sticks", "battery_low"};
+        h.missionFailures = QJsonArray{"controller_auto_check", "controller_preflight_check", "trajectory_not_ready"};
+        QTRY_VERIFY(h.mission.readiness().contains(QStringLiteral("遥控器未切到悬停模式")));
+        QVERIFY(h.mission.readiness().contains(QStringLiteral("遥控器摇杆未回中")));
+        QVERIFY(h.mission.readiness().contains(QStringLiteral("电池电压低于控制器阈值")));
+        QVERIFY(h.mission.readiness().contains(QStringLiteral("轨迹服务器未就绪")));
+        QVERIFY(!h.mission.readiness().contains(QStringLiteral("等待自动起降控制器")));
+        h.odomFresh = false; h.bounds = QJsonArray{};
+        QTRY_VERIFY(h.mission.readiness().contains(QStringLiteral("EKF 定位数据未更新")));
+        QVERIFY(h.mission.readiness().contains(QStringLiteral("围栏未设置")));
     }
     void explicitUploadStartAndCompletion() {
         MissionHarness h;

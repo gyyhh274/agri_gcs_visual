@@ -58,13 +58,108 @@ RoundTripMission::RoundTripMission(GroundLink *link, MappingClient *mapping, int
 }
 void RoundTripMission::enableLocalLink() { m_reconnect.start(); m_link->connectToGateway("127.0.0.1", 8765); }
 QString RoundTripMission::readiness() const {
-    if (!m_link->connected()) return QStringLiteral("等待机载自动任务服务连接");
-    if (!m_link->mission().value("automatic_supported").toBool()) return QStringLiteral("机载尚未启用自动往返任务配置");
-    if (!contextReady()) return QStringLiteral("等待本次 LIVE 坐标核对、场地围栏及新鲜定位");
-    if (active()) return QStringLiteral("任务执行中，可查询状态或终止并接管");
-    if (!m_link->mission().value("takeoff_ready").toBool()) return QStringLiteral("等待自动起降控制器、遥控器、电量及地面起飞前检查就绪");
-    if (!m_homeValid && !canRecord()) return QStringLiteral("请在地面静止约两秒，起降位置及上方须在本次围栏内");
-    if (m_homeValid && !originReady()) return QStringLiteral("当前位置或起飞高度变化，请重新确认起降点");
+    if (!m_link->connected()) return QStringLiteral("未满足：机载任务网关未连接");
+    if (active()) return QStringLiteral("任务执行中，可终止并接管");
+    QStringList missing;
+    const auto add = [&missing](const QString &value) { if (!missing.contains(value)) missing.append(value); };
+    const auto task = m_link->mission();
+    if (m_link->protocolVersion() != 2) add(QStringLiteral("机载任务协议版本不支持自动往返"));
+    if (!task.value("automatic_supported").toBool()) add(QStringLiteral("机载未启用自动往返任务"));
+    if (!m_link->odomFresh()) add(QStringLiteral("EKF 定位数据未更新"));
+    if (m_link->flightBounds().size() != 6) add(QStringLiteral("本次飞行围栏未设置或无效"));
+    if (!m_link->mapCoordinatesValid()) {
+        const QString reason = task.value("map_gate_reason").toString();
+        const QString reject = task.value("map_last_reject").toString();
+        const QString detail = task.value("map_last_reject_detail").toString();
+        if (reason == "no_fence") add(QStringLiteral("本次飞行围栏未设置或无效"));
+        else if (reason == "no_map" || reason == "map_not_arriving") add(QStringLiteral("机载 LIO 地图定位未更新"));
+        else if (reason == "map_stamp_ahead" || reason == "map_stamp_late" || reason == "map_stamp_invalid") add(QStringLiteral("机载 LIO 定位时间异常或过期"));
+        else if (reject == "distance" || reject == "angle") add(QStringLiteral("LIO 与 EKF 坐标不一致：%1").arg(detail));
+        else if (task.contains("map_planner") && task.value("map_planner").toInt() == 0) add(QStringLiteral("尚未收到 EKF 定位，无法核对地图坐标"));
+        else add(QStringLiteral("LIO 与 EKF 坐标核对尚未通过"));
+    }
+    if (!m_mapping->connected()) add(QStringLiteral("LIVE 点云地图未连接"));
+    else {
+        if (m_mapping->demo()) add(QStringLiteral("当前为演示地图，请切换 LIVE 地图"));
+        if (m_mapping->paused()) add(QStringLiteral("LIVE 地图已暂停"));
+        if (m_mapping->stale()) add(QStringLiteral("LIVE 地图数据未更新"));
+        if (!m_mapping->hasPose()) add(QStringLiteral("LIVE 地图位姿未更新"));
+        if (m_mapping->frameId() != "world") add(QStringLiteral("LIVE 地图坐标系不是 world"));
+        if (m_mapping->sessionId().isEmpty()) add(QStringLiteral("LIVE 地图会话未建立"));
+        if (m_mapping->host() != "127.0.0.1" || m_mapping->port() != m_mappingPort) add(QStringLiteral("LIVE 地图连接地址不匹配"));
+        const double now = QDateTime::currentMSecsSinceEpoch()/1000.;
+        if (m_mapping->hasPose() && (std::abs(m_mapping->poseStamp()-m_link->mapOdomStamp()) > .5 ||
+            now-m_mapping->poseStamp() >= 1.5 || now-m_mapping->poseStamp() < -.1))
+            add(QStringLiteral("LIVE 地图位姿时间与机载定位不匹配或已过期"));
+    }
+    if (!m_link->fcuConnected()) add(QStringLiteral("飞控未连接或状态已过期"));
+    if (m_link->armed()) add(QStringLiteral("飞控已解锁，请先落地锁定"));
+    if (!task.value("takeoff_ready").toBool()) {
+        static const QHash<QString, QString> labels = {
+            {"auto_config", QStringLiteral("机载自动起降配置未启用")},
+            {"fcu_link", QStringLiteral("飞控未连接或状态已过期")},
+            {"landed_status_stale", QStringLiteral("飞控着陆状态未更新")},
+            {"odom_stale", QStringLiteral("EKF 定位数据未更新")},
+            {"odom_frame", QStringLiteral("EKF 定位坐标系不是 world")},
+            {"odom_stamp", QStringLiteral("EKF 定位时间异常或过期")},
+            {"odom_invalid", QStringLiteral("EKF 位置、速度或姿态数据无效")},
+            {"imu_stale", QStringLiteral("飞控 IMU 数据未更新")},
+            {"imu_stamp", QStringLiteral("IMU 数据时间异常或过期")},
+            {"imu_invalid", QStringLiteral("IMU 姿态或加速度数据无效")},
+            {"rc_stale", QStringLiteral("遥控器信号未更新")},
+            {"rc_hover", QStringLiteral("遥控器未切到悬停模式")},
+            {"rc_command", QStringLiteral("遥控器未切到指令控制模式")},
+            {"rc_sticks", QStringLiteral("遥控器摇杆未回中")},
+            {"controller_state", QStringLiteral("飞行控制器未处于手动待机状态")},
+            {"armed", QStringLiteral("飞控已解锁，请先落地锁定")},
+            {"command_active", QStringLiteral("控制器仍在收到轨迹指令")},
+            {"land_detector", QStringLiteral("控制器未确认飞机已落地")},
+            {"not_on_ground", QStringLiteral("飞控未确认飞机已落地")},
+            {"moving", QStringLiteral("飞机未静止（定位速度超过 0.1 m/s）")},
+            {"battery_stale", QStringLiteral("电池电压数据未更新或无效")},
+            {"battery_low", QStringLiteral("电池电压低于控制器阈值")},
+            {"height_invalid", QStringLiteral("起飞悬停高度无效或尚未收到")},
+            {"trajectory_not_ready", QStringLiteral("轨迹服务器未就绪或已停止输出")},
+            {"map_not_ready", QStringLiteral("机载地图与围栏校验未就绪")},
+            {"landing_latched", QStringLiteral("上次降落状态尚未复位，请进行任务初始化")},
+            {"mission_fault", QStringLiteral("任务故障尚未复位，请进行任务初始化")},
+            {"planner_heartbeat", QStringLiteral("规划器心跳未更新")},
+            {"planner_goal", QStringLiteral("规划器未接收目标点")},
+            {"controller_stale", QStringLiteral("飞行控制器状态未更新")},
+            {"controller_auto_stale", QStringLiteral("飞行控制器自动控制状态未更新")},
+            {"controller_preflight_stale", QStringLiteral("飞行控制器起飞检查状态未更新")},
+            {"controller_no_commands", QStringLiteral("飞行控制器未接收起降指令")}
+        };
+        const QVariant controller = task.value("preflight_controller_reasons");
+        const QVariant executor = task.value("preflight_mission_reasons");
+        const bool haveController = controller.isValid() && !controller.isNull();
+        const bool haveExecutor = executor.isValid() && !executor.isNull();
+        const auto controllerReasons = controller.toList();
+        const auto process = [&](const QVariantList &reasons) {
+            for (const QVariant &item : reasons) {
+                const QString code = item.toString();
+                if (code == "controller_auto_check" || code == "controller_preflight_check") {
+                    if (!haveController || controllerReasons.isEmpty()) add(QStringLiteral("飞行控制器检查未通过，正在等待具体原因"));
+                } else if (labels.contains(code)) add(labels.value(code));
+                else add(QStringLiteral("机载起飞检查未通过（%1）").arg(code));
+            }
+        };
+        if (haveController) process(controllerReasons);
+        if (haveExecutor) process(executor.toList());
+        if (!haveExecutor) add(QStringLiteral("机载任务起飞检查详情未更新"));
+        if (!haveController) add(QStringLiteral("飞行控制器检查详情未更新"));
+        if (missing.isEmpty()) add(QStringLiteral("机载起飞检查未通过，等待具体原因"));
+    }
+    if (!canEdit() && !active()) {
+        if (m_link->busy()) add(QStringLiteral("机载正在处理上一条请求"));
+        else if (task.value("state") == "FAILED") add(QStringLiteral("任务处于失败状态，请先初始化"));
+    }
+    if (missing.isEmpty() && !m_homeValid && !canRecord()) {
+        const auto detail = recordHint();
+        if (!detail.isEmpty()) add(detail);
+    }
+    if (missing.isEmpty() && m_homeValid && !originReady()) add(QStringLiteral("当前位置或起飞高度变化，请重新确认起降点"));
+    if (!missing.isEmpty()) return QStringLiteral("未满足的条件：\n• ") + missing.join(QStringLiteral("\n• "));
     return QStringLiteral("自动起飞前检查通过；上传后仍须单独确认开始");
 }
 bool RoundTripMission::contextReady() const {

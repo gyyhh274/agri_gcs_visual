@@ -30,13 +30,6 @@ Rectangle {
             }
             GButton { objectName: "roundTripUploadButton"; width: parent.width; height: 34; text: "③ 上传任务"; enabled: control.mission.canUpload && isFinite(Number(hoverField.text)) && Number(hoverField.text) >= 0 && Number(hoverField.text) <= 60; onClicked: control.mission.upload(Number(hoverField.text)) }
             GButton { objectName: "roundTripStartButton"; width: parent.width; height: 34; text: "④ 执行飞行任务…"; fill: "#116282"; enabled: control.mission.canStart; onClicked: startDialog.open() }
-            Text {
-                width: parent.width
-                visible: !control.mission.canRecord && !control.mission.homeValid
-                         && control.mission.recordHint.length > 0
-                text: "未能选点：" + control.mission.recordHint
-                color: "#e8bb76"; font.pixelSize: 11; wrapMode: Text.WordWrap
-            }
             Text { width: parent.width; text: control.mission.homeValid ? "起降点: " + control.mission.groundOrigin.x.toFixed(2) + ", " + control.mission.groundOrigin.y.toFixed(2) + ", " + control.mission.groundOrigin.z.toFixed(2) + " m\n自动起飞上升 " + (control.mission.home.z-control.mission.groundOrigin.z).toFixed(2) + " m，返航高度 Z=" + control.mission.home.z.toFixed(2) : "在地面保持静止、飞控未解锁，确认本次起降位置。"; color: "#b7cedb"; font.pixelSize: 12; wrapMode: Text.WordWrap }
             Row {
                 spacing: 8
