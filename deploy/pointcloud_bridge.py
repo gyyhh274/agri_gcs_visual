@@ -107,6 +107,8 @@ class MapBridge:
     def __init__(self, voxel_size=0.025, maximum_points=1500000, maximum_clients=4,
                  demo=False, clock=time.monotonic):
         self.lock = threading.RLock()
+        # 加锁顺序：地图锁 → 发送锁 → 客户端锁；位姿不等待点云处理的地图锁。
+        self.send_lock = threading.RLock()
         self.clients_lock = threading.Lock()
         self.clock = clock
         self.voxel_size = voxel_size
@@ -139,16 +141,22 @@ class MapBridge:
         with self.clients_lock:
             self.clients = [peer for peer in self.clients if peer.offer(packet)]
 
+    def _send(self, kind, payload=b"", **fields):
+        # 序号分配与入队使用同一把锁，保证各客户端收到的帧顺序一致。
+        with self.send_lock:
+            self._broadcast(self._packet(kind, payload, **fields))
+
     def _reset(self, frame, reason):
-        self.session = str(uuid.uuid4())
-        self.sequence = 0
-        self.frame = frame
-        self.points.clear()
-        self.pose = None
-        self.last_pose_time = None
-        self.last_stamp = None
-        self.last_cloud_time = None
-        self._broadcast(self._packet("reset", reason=reason))
+        with self.send_lock:
+            self.session = str(uuid.uuid4())
+            self.sequence = 0
+            self.frame = frame
+            self.points.clear()
+            self.pose = None
+            self.last_pose_time = None
+            self.last_stamp = None
+            self.last_cloud_time = None
+            self._broadcast(self._packet("reset", reason=reason))
 
     def set_ros(self, ready, message):
         with self.lock:
@@ -190,30 +198,35 @@ class MapBridge:
 
     def heartbeat(self):
         with self.lock:
-            self._broadcast(self._packet("status", **self.status()))
+            self._send("status", **self.status())
 
     def add_peer(self, peer):
         # Hold the same lock as publish_cloud: snapshot always precedes all newer deltas.
         with self.lock:
-            self.clients = [item for item in self.clients if not item.closed]
-            if len(self.clients) >= self.maximum_clients:
+            with self.clients_lock:
+                self.clients = [item for item in self.clients if not item.closed]
+                full = len(self.clients) >= self.maximum_clients
+            if full:
                 peer.close()
                 return False
-            packets = [self._packet("hello", voxel_size=self.voxel_size,
-                                    max_points=self.maximum_points),
-                       self._packet("cloud", self._payload(self.points.values()),
-                                    point_count=len(self.points), snapshot=True,
-                                    stale=self.last_cloud_time is None or self.clock() - self.last_cloud_time > 3)]
-            if self.pose and self.last_pose_time is not None and self.clock() - self.last_pose_time <= 3:
-                packets.append(self._packet("pose", **self.pose))
-            packets.append(self._packet("status", **self.status()))
-            for packet in packets:
-                if not peer.offer(packet):
-                    peer.close()
-                    return False
-            with self.clients_lock:
-                self.clients.append(peer)
-            return True
+            # 先准备可能较大的快照，再获取发送锁，减少对位姿发送的阻塞。
+            snapshot = self._payload(self.points.values())
+            with self.send_lock:
+                packets = [self._packet("hello", voxel_size=self.voxel_size,
+                                        max_points=self.maximum_points),
+                           self._packet("cloud", snapshot,
+                                        point_count=len(self.points), snapshot=True,
+                                        stale=self.last_cloud_time is None or self.clock() - self.last_cloud_time > 3)]
+                if self.pose and self.last_pose_time is not None and self.clock() - self.last_pose_time <= 3:
+                    packets.append(self._packet("pose", **self.pose))
+                packets.append(self._packet("status", **self.status()))
+                for packet in packets:
+                    if not peer.offer(packet):
+                        peer.close()
+                        return False
+                with self.clients_lock:
+                    self.clients.append(peer)
+                return True
 
     @staticmethod
     def _payload(points):
@@ -245,8 +258,8 @@ class MapBridge:
                 return False
             self.last_stamp = stamp
             self.last_cloud_time = self.clock()
-            self._broadcast(self._packet("cloud", self._payload(changes.values()), stamp=stamp,
-                                         point_count=len(changes), snapshot=False))
+            payload = self._payload(changes.values())
+            self._send("cloud", payload, stamp=stamp, point_count=len(changes), snapshot=False)
             return True
 
     def publish_pose(self, position, orientation, stamp, frame="world"):
@@ -260,14 +273,15 @@ class MapBridge:
         # 位姿路径刻意不拿 self.lock：点云 diff 会长时间持锁，位姿被堵住会
         # 让地面站的"LIVE 位姿"判据超时（实测掉到 0.3 Hz）。frame/last_stamp
         # 是只读比较，允许轻微竞争。
-        if frame != self.frame:
-            return False
-        if self.last_stamp is not None and stamp < self.last_stamp - 3:
-            return False
-        self.pose = dict(position=list(position), orientation=[value / norm for value in orientation], stamp=stamp)
-        self.last_pose_time = self.clock()
-        self._broadcast(self._packet("pose", **self.pose))
-        return True
+        with self.send_lock:
+            if frame != self.frame:
+                return False
+            if self.last_stamp is not None and stamp < self.last_stamp - 3:
+                return False
+            self.pose = dict(position=list(position), orientation=[value / norm for value in orientation], stamp=stamp)
+            self.last_pose_time = self.clock()
+            self._broadcast(self._packet("pose", **self.pose))
+            return True
 
     def close(self):
         with self.lock:

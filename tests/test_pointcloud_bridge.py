@@ -129,6 +129,121 @@ class MapTests(unittest.TestCase):
         self.assertEqual([item["snapshot"] for item in clouds], [True, False])
         self.assertEqual([item["point_count"] for item in clouds], [0, 1])
 
+    def test_concurrent_cloud_and_pose_preserve_sequence_order(self):
+        core = bridge.MapBridge()
+        peer = CapturePeer()
+        self.assertTrue(core.add_peer(peer))
+        entered = threading.Event()
+        release = threading.Event()
+        pose_started = threading.Event()
+        pose_done = threading.Event()
+        original_packet = core._packet
+
+        def delay_cloud(kind, *args, **kwargs):
+            packet = original_packet(kind, *args, **kwargs)
+            if kind == 'cloud':
+                entered.set()
+                if not release.wait(3):
+                    raise RuntimeError('test timed out')
+            return packet
+
+        core._packet = delay_cloud
+        cloud = threading.Thread(target=lambda: core.publish_cloud([(0, 0, 0, 1)], 1))
+        pose = threading.Thread(target=lambda: (pose_started.set(), core.publish_pose((0, 0, 0), (0, 0, 0, 1), 1), pose_done.set()))
+        cloud.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            pose.start()
+            self.assertTrue(pose_started.wait(2))
+            pose_done.wait(0.2)
+        finally:
+            release.set()
+        cloud.join(3)
+        if pose.ident is not None:
+            pose.join(3)
+        self.assertFalse(cloud.is_alive())
+        self.assertFalse(pose.is_alive())
+        frames = peer.frames()
+        sequences = [header['seq'] for header, _ in frames]
+        self.assertEqual(sequences, sorted(set(sequences)))
+        self.assertEqual([header['type'] for header, _ in frames[-2:]], ['cloud', 'pose'])
+
+    def test_pose_can_publish_while_snapshot_payload_is_built(self):
+        core = bridge.MapBridge()
+        existing, newcomer = CapturePeer(), CapturePeer()
+        self.assertTrue(core.add_peer(existing))
+        self.assertTrue(core.publish_cloud([(0, 0, 0, 1)], 1))
+        entered = threading.Event()
+        release = threading.Event()
+        pose_done = threading.Event()
+        original_payload = core._payload
+
+        def delay_snapshot(points):
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError('test timed out')
+            return original_payload(points)
+
+        core._payload = delay_snapshot
+        connector = threading.Thread(target=lambda: core.add_peer(newcomer))
+        producer = threading.Thread(target=lambda: (core.publish_pose((1, 0, 0), (0, 0, 0, 1), 1), pose_done.set()))
+        connector.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            producer.start()
+            pose_remained_responsive = pose_done.wait(1)
+        finally:
+            release.set()
+        connector.join(3)
+        if producer.ident is not None:
+            producer.join(3)
+        self.assertTrue(pose_remained_responsive)
+        self.assertFalse(connector.is_alive())
+        self.assertFalse(producer.is_alive())
+        frames = newcomer.frames()
+        self.assertEqual([header['type'] for header, _ in frames], ['hello', 'cloud', 'pose', 'status'])
+        self.assertTrue(frames[1][0]['snapshot'])
+        self.assertEqual([header['seq'] for header, _ in frames], sorted({header['seq'] for header, _ in frames}))
+
+    def test_reset_and_concurrent_pose_preserve_new_session_order(self):
+        core = bridge.MapBridge()
+        peer = CapturePeer()
+        self.assertTrue(core.add_peer(peer))
+        entered = threading.Event()
+        release = threading.Event()
+        pose_started = threading.Event()
+        pose_done = threading.Event()
+        original_packet = core._packet
+
+        def delay_reset(kind, *args, **kwargs):
+            packet = original_packet(kind, *args, **kwargs)
+            if kind == 'reset':
+                entered.set()
+                if not release.wait(3):
+                    raise RuntimeError('test timed out')
+            return packet
+
+        core._packet = delay_reset
+        reset = threading.Thread(target=lambda: core.reset_source('test reset'))
+        pose = threading.Thread(target=lambda: (pose_started.set(), core.publish_pose((0, 0, 0), (0, 0, 0, 1), 1), pose_done.set()))
+        reset.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            pose.start()
+            self.assertTrue(pose_started.wait(2))
+            pose_done.wait(0.2)
+        finally:
+            release.set()
+        reset.join(3)
+        if pose.ident is not None:
+            pose.join(3)
+        self.assertFalse(reset.is_alive())
+        self.assertFalse(pose.is_alive())
+        headers = [header for header, _ in peer.frames()]
+        self.assertEqual([h['type'] for h in headers[-2:]], ['reset', 'pose'])
+        self.assertEqual([h['seq'] for h in headers[-2:]], [0, 1])
+        self.assertEqual(headers[-2]['session'], headers[-1]['session'])
+
     def test_source_restart_and_frame_change_create_new_sessions(self):
         core = bridge.MapBridge()
         peer = CapturePeer()
