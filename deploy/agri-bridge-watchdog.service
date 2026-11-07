@@ -1,0 +1,14 @@
+[Unit]
+Description=Agri GCS point cloud bridge watchdog
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u /home/nv/.local/lib/agri-gcs/bridge_watchdog.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/bridge_watchdog.out
+StandardError=append:/tmp/bridge_watchdog.out
+
+[Install]
+WantedBy=default.target
