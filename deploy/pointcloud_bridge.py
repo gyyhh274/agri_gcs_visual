@@ -107,11 +107,6 @@ class MapBridge:
     def __init__(self, voxel_size=0.025, maximum_points=1500000, maximum_clients=4,
                  demo=False, clock=time.monotonic):
         self.lock = threading.RLock()
-        # 运行期计数器：用来区分"ROS 回调没进来"与"进来了但发不出去"。
-        self.rx_cloud = 0
-        self.rx_pose = 0
-        self.tx_cloud = 0
-        self.tx_pose = 0
         self.clients_lock = threading.Lock()
         self.clock = clock
         self.voxel_size = voxel_size
@@ -250,7 +245,6 @@ class MapBridge:
                 return False
             self.last_stamp = stamp
             self.last_cloud_time = self.clock()
-            self.tx_cloud += 1
             self._broadcast(self._packet("cloud", self._payload(changes.values()), stamp=stamp,
                                          point_count=len(changes), snapshot=False))
             return True
@@ -272,7 +266,6 @@ class MapBridge:
             return False
         self.pose = dict(position=list(position), orientation=[value / norm for value in orientation], stamp=stamp)
         self.last_pose_time = self.clock()
-        self.tx_pose += 1
         self._broadcast(self._packet("pose", **self.pose))
         return True
 
@@ -387,17 +380,6 @@ class BodyCloudAligner:
         return transformed(), frame
 
 
-def install_stack_dump():
-    """卡住时能被看门狗要一份线程栈：kill -USR1 <pid> 即打印到 stderr。"""
-    try:
-        import faulthandler
-        import signal as signal_module
-        faulthandler.register(signal_module.SIGUSR1, all_threads=True)
-        return True
-    except (ImportError, AttributeError, ValueError):
-        return False
-
-
 def master_available(uri):
     try:
         with xmlrpc.client.ServerProxy(uri, transport=TimeoutTransport()) as master:
@@ -422,7 +404,6 @@ def ros_worker(bridge, stop, max_hz, cloud_source='body'):
     aligner = BodyCloudAligner()
 
     def cloud_callback(message):
-        bridge.rx_cloud += 1
         with callback_lock:
             connection_header = getattr(message, "_connection_header", {}) or {}
             if bridge.observe_source(message.header.seq, connection_header.get("callerid", "")):
@@ -431,17 +412,7 @@ def ros_worker(bridge, stop, max_hz, cloud_source='body'):
 
     def process_clouds():
         last_slot = -1
-        last_stats = time.monotonic()
-        prev = (0, 0, 0, 0)
         while not stop.wait(0.005):
-            if time.monotonic() - last_stats >= 5.0:
-                last_stats = time.monotonic()
-                now = (bridge.rx_cloud, bridge.rx_pose, bridge.tx_cloud, bridge.tx_pose)
-                print('bridge stats: rx_cloud=+%d rx_pose=+%d tx_cloud=+%d tx_pose=+%d '
-                      'pending=%d poses=%d'
-                      % (now[0] - prev[0], now[1] - prev[1], now[2] - prev[2], now[3] - prev[3],
-                         len(pending), len(aligner.poses)), flush=True)
-                prev = now
             slot = int(time.monotonic() * max_hz)
             if slot == last_slot:
                 continue
@@ -468,7 +439,6 @@ def ros_worker(bridge, stop, max_hz, cloud_source='body'):
                     pending.clear()
 
     def pose_callback(message):
-        bridge.rx_pose += 1
         p, q = message.pose.pose.position, message.pose.pose.orientation
         aligner.add_pose(message.header.stamp.to_sec(), message.header.frame_id,
                          message.child_frame_id, (p.x, p.y, p.z), (q.x, q.y, q.z, q.w))
@@ -553,7 +523,6 @@ def demo_worker(bridge, stop):
 
 
 def main():
-    install_stack_dump()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=37262)
