@@ -42,10 +42,10 @@ Item {
      * 换机器只改这一个地址。特殊场景（例如地面站直接接在相机网段）
      * 也可以填完整的 rtsp:// 地址，此时原样使用。
      */
-    property string host: "192.168.2.113"
+    property string host: "192.168.2.112"
     /* SSH 用户名。隧道服务（mapping_tunnel.py）直接读这个字段决定以哪个账号登录，
      * 所以界面上改这一格就等于改隧道身份，不再藏在 systemd 单元里。 */
-    property string sshUser: "nv"
+    property string sshUser: "ly"
     /* 认证方式：false = 密钥（默认，隧道读 ~/.ssh/agri_*_ed25519）；
      *           true  = 用户名 + 密码。密码只写在本机配置文件里（600），
      *                   不写日志、不出现在进程参数中。 */
@@ -54,7 +54,7 @@ Item {
     /* 机载项目目录：任务初始化时在其下拼接
      * point-mission/manual/planner.launch，带围栏参数重启规划器。
      * 换一台机载电脑/换项目时只改这一处。 */
-    property string projectDir: "/home/nv/Documents/diff-planner-A8mini"
+    property string projectDir: "/home/ly/Documents/diff-planner-A8mini-gcs-mission"
     readonly property int rtspPort: 8554
     readonly property string streamPath: "a8mini"    // MediaMTX 上的路径名
     readonly property string url: host.indexOf("rtsp://") === 0
@@ -63,7 +63,7 @@ Item {
 
     readonly property string relayHost: {
         var match = /^rtsp:\/\/(?:[^@\/]*@)?([^:\/]+)/.exec(url)
-        return match ? match[1] : "192.168.2.113"
+        return match ? match[1] : "192.168.2.112"
     }
     readonly property int gimbalPort: 37260
     readonly property int photoPort: 37261
@@ -74,6 +74,14 @@ Item {
                                              + "　云台 :" + gimbalPort
                                              + "　照片 :" + photoPort
 
+    // Retire known nv defaults only when the selected machine is ly.
+    Component.onCompleted: {
+        if (sshUser === "ly" && (host === "192.168.2.112" || host === "ly")
+                && (projectDir === "/home/nv/Documents/diff-planner-A8mini"
+                    || projectDir === "/home/nv/.local/state/agri-gcs"))
+            projectDir = "/home/ly/Documents/diff-planner-A8mini-gcs-mission"
+    }
+
     // ── 持久化字段 ──────────────────────────────────────────────
     // MediaMTX 只读账号（read 权限仅限 a8mini 路径、仅限本地网段）
     // 口令不写进源码：首次使用时在「系统设置 → 认证账号」里填写，
@@ -82,7 +90,7 @@ Item {
     property string userPw: ""
     property int codecIndex: 0        // 0=自动 1=H.264 2=H.265
     property int transportIndex: 0    // 0=TCP 1=UDP
-    property int latency: 200         // ms，仅 GStreamer 路径生效
+    property int latency: 400         // ms，仅 GStreamer 路径生效
     property bool enabled: true       // 关闭后不建立任何连接
     property bool livePanelVisible: true
 
@@ -122,21 +130,24 @@ Item {
      * decodebin 会自动选择 H.264/H.265 解复用与解码器，避免把 main.264
      * 误当成 H.264；指定编码时则强制对应的 depay/parse/decoder。
      * 认证用 rtspsrc 的 user-id / user-pw 属性（MediaMTX 的只读账号）。 */
+    function pipelineValue(value) {
+        return '"' + value.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"'
+    }
+
     function buildPipeline() {
-        var q = '"'
-        var p = "rtspsrc location=" + q + url + q
+        var p = "rtspsrc location=" + pipelineValue(url)
               + " protocols=" + transport
               + " latency=" + latency
-              + " drop-on-latency=true"
+              + " drop-on-latency=false"
         if (transport === "tcp")
             p += " tcp-timeout=5000000"
         if (userId.length > 0)
-            p += " user-id=" + q + userId + q + " user-pw=" + q + userPw + q
+            p += " user-id=" + pipelineValue(userId) + " user-pw=" + pipelineValue(userPw)
         p += " ! "
         if (codec === "h264")
-            p += "rtph264depay ! h264parse ! avdec_h264"
+            p += "rtph264depay ! h264parse ! avdec_h264 output-corrupt=false"
         else if (codec === "h265")
-            p += "rtph265depay ! h265parse ! avdec_h265"
+            p += "rtph265depay ! h265parse ! avdec_h265 output-corrupt=false"
         else
             p += "decodebin"
         p += " ! videoconvert ! qtvideosink"

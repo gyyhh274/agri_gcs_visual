@@ -184,7 +184,7 @@ Item {
         loadedWatchdog.restart()
         phase = "connecting"
         detail = (pipelineMode ? "连接中（TCP/H.265 流水线）" : "连接中（Qt 默认管线）")
-        logStatus("启动 " + (pipelineMode ? "pipeline" : "plain") + " -> " + next)
+        logStatus("启动 " + (pipelineMode ? "pipeline" : "plain") + " -> " + VideoConfig.relayHost + ":" + VideoConfig.rtspPort)
     }
 
     function scheduleRetry() {
@@ -298,6 +298,8 @@ Item {
     Connections {
         target: VideoConfig
         function onPipelineRevisionChanged() { if (root.wantActive) root.requestStart() }
+        function onUserIdChanged() { if (root.wantActive) root.requestStart() }
+        function onUserPwChanged() { if (root.wantActive) root.requestStart() }
         function onReconnectRequestChanged() { VideoConfig.enabled = true; root.reconnectNow() }
     }
 

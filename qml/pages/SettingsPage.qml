@@ -225,7 +225,7 @@ Item {
                             ValueField {
                                 width: 92; height: 33
                                 text: VideoConfig.sshUser
-                                placeholderText: "nv"
+                                placeholderText: "ly"
                                 onTextEdited: VideoConfig.sshUser = text.trim()
                             }
                             GButton {
@@ -241,7 +241,7 @@ Item {
                             ValueField {
                                 width: parent.width - 84; height: 31
                                 text: VideoConfig.projectDir
-                                placeholderText: "/home/nv/.local/state/agri-gcs"
+                                placeholderText: "/home/ly/Documents/diff-planner-A8mini-gcs-mission"
                                 onTextEdited: VideoConfig.projectDir = text.trim()
                             }
                         }
