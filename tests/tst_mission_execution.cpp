@@ -146,6 +146,10 @@ private slots:
         QTRY_COMPARE(h.link.mission().value("init_phase").toString(), QString("ekf"));
         QTRY_VERIFY(h.mission.status().contains(QStringLiteral("检查 EKF")));
         QVERIFY(!h.mission.canInitialize());
+        h.initPhase = "awaiting_calibration"; h.initDetail = QStringLiteral("请重新确认围栏");
+        QTRY_COMPARE(h.link.mission().value("init_phase").toString(), QString("awaiting_calibration"));
+        QTRY_VERIFY(h.mission.canInitialize());
+        QTRY_VERIFY(h.mission.status().contains(QStringLiteral("新地图")));
         h.initPhase = "failed"; h.initDetail = QStringLiteral("EKF 未就绪");
         QTRY_VERIFY(h.mission.status().contains(QStringLiteral("EKF 未就绪")));
         QTRY_VERIFY(h.mission.canInitialize());
@@ -156,6 +160,7 @@ private slots:
     }
     void initializationPreservesAsymmetricBounds() {
         MissionHarness h;
+        QTRY_VERIFY_WITH_TIMEOUT(h.link.connected(), 4000);
         QTRY_VERIFY_WITH_TIMEOUT(h.mission.canInitialize(), 4000);
         const QVariantList bounds{-1., -2., -.2, 2.1, .8, 1.8};
         QVERIFY(h.mission.initialize(bounds, "/home/nv/Documents/diff-planner-A8mini", .5));

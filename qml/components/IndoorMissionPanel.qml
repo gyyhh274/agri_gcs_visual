@@ -182,7 +182,9 @@ Rectangle {
             spacing: 10
             Text { text: "任务初始化"; color: "white"; font.pixelSize: 18 }
             Text { width: parent.width
-                   text: "默认围栏为 1 m × 1 m × 1 m，以当前位置为水平中心，可自行修改。请核对边界是否在实际场地内。\n初始化会清理旧任务并重建规划器地图；仅在地面、飞控未解锁时可用。"
+                   text: groundLink.mission.init_phase === "awaiting_calibration"
+                       ? "服务已重启。请刷新新地图位置，在新坐标系内重新确认围栏；起降点也需重新标定。"
+                       : "第一次确认会重启机载服务并重建地图。服务重启后，请再次打开初始化，刷新位置并确认新围栏。仅在地面、飞控未解锁时可用。"
                    color: "#cfe0ef"; wrapMode: Text.WordWrap; font.pixelSize: 12 }
 
             Text { width: parent.width

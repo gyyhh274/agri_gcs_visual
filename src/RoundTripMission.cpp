@@ -260,7 +260,8 @@ bool RoundTripMission::canInitialize() const {
     // 已连接时沿用 canClear 的全部安全条件；未连接时允许点击——它的用途正是
     // 把机载适配器拉起来，此时拿不到飞行状态，只能依赖连接恢复后的 clear 校验。
     const QString phase = m_link->mission().value("init_phase").toString();
-    if (!phase.isEmpty() && phase != "idle" && phase != "ready" && phase != "failed") return false;
+    if (!phase.isEmpty() && phase != "idle" && phase != "ready" && phase != "failed"
+        && phase != "awaiting_calibration") return false;
     if (m_link->connected()) return canClear();
     return !m_link->busy();
 }
@@ -382,8 +383,9 @@ void RoundTripMission::update() {
         m_lastInitPhase = phase;
         if (phase == "ready") m_status = QStringLiteral("初始化完成：%1").arg(detail);
         else if (phase == "failed") m_status = QStringLiteral("初始化失败：%1").arg(detail);
+        else if (phase == "awaiting_calibration") m_status = QStringLiteral("服务重启完成：请在新地图上重新确认围栏，再点击任务初始化完成配置");
     }
-    if (phase != "idle" && phase != "ready" && phase != "failed" && !detail.isEmpty())
+    if (phase != "idle" && phase != "ready" && phase != "failed" && phase != "awaiting_calibration" && !detail.isEmpty())
         m_status = QStringLiteral("初始化中：%1").arg(detail);
 
     // 引导流程：适配器起来、链路恢复后自动补发 initialize
