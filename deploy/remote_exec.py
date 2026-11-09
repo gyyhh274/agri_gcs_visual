@@ -22,7 +22,7 @@ def state_dir():
 
 
 def load_config(path):
-    config = ConfigParser()
+    config = ConfigParser(interpolation=None)
     config.read(path, encoding="utf-8")
     return config
 
@@ -35,10 +35,19 @@ def password_of(config):
     if setting(config, "sshUsePassword", "false").lower() != "true":
         return ""
     raw = config.get("VideoStream", "sshPassword", fallback="")
-    try:
-        return bytes(raw, "utf-8").decode("unicode_escape").encode("latin-1").decode("utf-8")
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        return raw
+    if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
+        raw = raw[1:-1]
+        decoded = []
+        index = 0
+        while index < len(raw):
+            if raw[index] == "\\" and index + 1 < len(raw):
+                decoded.append(raw[index + 1])
+                index += 2
+            else:
+                decoded.append(raw[index])
+                index += 1
+        return "".join(decoded)
+    return raw
 
 
 def askpass_helper():
@@ -69,7 +78,7 @@ def main():
 
     config = load_config(args.settings)
     host = setting(config, "host")
-    user = setting(config, "sshUser") or "nv"
+    user = setting(config, "sshUser") or "ly"
     if not host or host.startswith("rtsp://"):
         print("机载地址未配置", file=sys.stderr)
         return 2
@@ -91,7 +100,9 @@ def main():
             print("SSH 执行密钥不存在：%s" % identity, file=sys.stderr)
             return 3
         command += ["-i", str(identity), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"]
-    command += ["%s@%s" % (user, host), ACTION]
+    # Password logins use the account shell; restricted keys keep the forced action.
+    remote_action = "systemctl --user start agri-task-gateway.service" if password else ACTION
+    command += ["%s@%s" % (user, host), remote_action]
 
     try:
         result = subprocess.run(command, text=True, env=env, stdout=subprocess.PIPE,

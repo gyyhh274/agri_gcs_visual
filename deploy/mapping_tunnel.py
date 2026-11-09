@@ -85,13 +85,14 @@ def configured_host(settings_path):
     return host
 
 
-def forward_arguments(port, start_port, task_only=False, pose_port=None):
+def forward_arguments(port, start_port, task_only=False, pose_port=None, remote_pose_port=None):
     if pose_port is None:
         pose_port = port + 2
     ports = [port] if task_only else [port, start_port, pose_port]
     result = []
     for value in ports:
-        result += ["-L", "127.0.0.1:{0}:127.0.0.1:{0}".format(value)]
+        target = remote_pose_port if not task_only and value == pose_port and remote_pose_port is not None else value
+        result += ["-L", "127.0.0.1:{}:127.0.0.1:{}".format(value, target)]
     return result
 
 
@@ -103,11 +104,14 @@ def main():
     parser.add_argument("--port", type=int, default=37262)
     parser.add_argument("--start-port", type=int, default=37263)
     parser.add_argument("--pose-port", type=int, default=None)
+    parser.add_argument("--remote-pose-port", type=int, default=None, help="onboard pose port when different from the local pose port")
     parser.add_argument("--task-only", action="store_true", help="Forward only --port using a separate task identity")
     args = parser.parse_args()
     if args.pose_port is None:
         args.pose_port = args.port + 2
-    if (not 1 <= args.port <= 65535 or not 1 <= args.start_port <= 65535
+    if args.remote_pose_port is None:
+        args.remote_pose_port = args.pose_port
+    if (not 1 <= args.remote_pose_port <= 65535 or not 1 <= args.port <= 65535 or not 1 <= args.start_port <= 65535
             or (not args.task_only and (not 1 <= args.pose_port <= 65535 or len({args.port, args.start_port, args.pose_port}) != 3))
             or args.port == args.start_port or not re.fullmatch(r"[a-z_][a-z0-9_-]*", args.user)):
         parser.error("invalid SSH user or mapping port")
@@ -141,10 +145,10 @@ def main():
                 command += ["-i", str(args.identity),
                             "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"]
             command += ["-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5",
-                        "-o", "HostKeyAlias=agri-onboard-pointcloud",
+                        "-o", "HostKeyAlias=" + host,
                         "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=5",
                         "-o", "ServerAliveCountMax=2"]
-            command += forward_arguments(args.port, args.start_port, args.task_only, args.pose_port)
+            command += forward_arguments(args.port, args.start_port, args.task_only, args.pose_port, args.remote_pose_port)
             command += ["{}@{}".format(login_user, host)]
             status = "forwarding 127.0.0.1:{} through {} ({})".format(
                 args.port, host, "password" if password else "key")

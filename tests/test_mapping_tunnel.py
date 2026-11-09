@@ -12,6 +12,10 @@ class TunnelConfigurationTests(unittest.TestCase):
     def test_task_identity_only_forwards_the_task_port(self):
         self.assertEqual(module.forward_arguments(8765,37263,True),["-L","127.0.0.1:8765:127.0.0.1:8765"])
         self.assertEqual(module.forward_arguments(37262,37263),["-L","127.0.0.1:37262:127.0.0.1:37262","-L","127.0.0.1:37263:127.0.0.1:37263","-L","127.0.0.1:37264:127.0.0.1:37264"])
+    def test_remote_pose_port_can_differ_without_changing_client_port(self):
+        self.assertEqual(module.forward_arguments(37262, 37263, pose_port=37264, remote_pose_port=37265),
+                         ["-L", "127.0.0.1:37262:127.0.0.1:37262", "-L", "127.0.0.1:37263:127.0.0.1:37263", "-L", "127.0.0.1:37264:127.0.0.1:37265"])
+
     def host(self, value):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.conf"
