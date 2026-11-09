@@ -121,6 +121,7 @@ QString RoundTripMission::readiness() const {
             {"height_invalid", QStringLiteral("起飞悬停高度无效或尚未收到")},
             {"trajectory_not_ready", QStringLiteral("轨迹服务器未就绪或已停止输出")},
             {"map_not_ready", QStringLiteral("机载地图与围栏校验未就绪")},
+            {"visual_landing_not_ready", QStringLiteral("视觉降落未就绪：检查相机标定、图像、识别节点及云台")},
             {"landing_latched", QStringLiteral("上次降落状态尚未复位，请进行任务初始化")},
             {"mission_fault", QStringLiteral("任务故障尚未复位，请进行任务初始化")},
             {"planner_heartbeat", QStringLiteral("规划器心跳未更新")},
@@ -473,7 +474,17 @@ QString RoundTripMission::phase() const {
     if (s == "COMPLETED") return QStringLiteral("往返完成，已自动降落并锁定电机");
     if (s == "TAKING_OFF") return QStringLiteral("正在自动起飞，等待稳定悬停后前往目标");
     if (s == "LANDING") return QStringLiteral("已返回，正在自动降落；等待落地并锁定电机");
-    if (s == "FAILED") return QStringLiteral("任务已停止：%1").arg(m.value("reason").toString());
+    if (s == "FAILED") {
+        const QString reason = m.value("reason").toString();
+        static const QHash<QString, QString> reasons = {
+            {"Visual landing unavailable or alignment timed out", QStringLiteral("视觉降落未就绪或对准超时")},
+            {"Visual landing target missing or stale", QStringLiteral("未检测到有效降落标记或标记数据已过期")},
+            {"Visual landing corridor is not clear", QStringLiteral("视觉降落点的垂直走廊不通畅")},
+            {"Visual target lost or excessive drift during descent", QStringLiteral("下降中标记丢失或水平偏移过大")},
+            {"Unable to converge to waypoint after replanning", QStringLiteral("多次重规划后仍未到达航点")}
+        };
+        return QStringLiteral("任务已停止：%1").arg(reasons.value(reason, reason));
+    }
     if (s == "FLYING") return m.value("completed").toInt() == 0 ? QStringLiteral("正在前往目标") : QStringLiteral("正在返回起飞点上方");
     if (s == "HOVERING") return QStringLiteral("已到点，正在悬停");
     if (s == "READY") return QStringLiteral("任务已上传，等待确认开始");
